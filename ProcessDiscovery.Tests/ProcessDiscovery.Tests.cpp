@@ -280,6 +280,42 @@ int main() {
 		return 1;
 	}
 
+	// Este cenário usa apenas um trabalhador. Assim, cada processo é analisado
+	// antes que o próximo comece, simulando uma execução sequencial.
+	InspectionOptions oneWorker{};
+	oneWorker.include_image_path = false;
+	oneWorker.max_concurrent_processes = 1;
+	const QueryResult oneWorkerResult = catalog.enumerate(oneWorker);
+	if (oneWorkerResult.state == QueryState::failed ||
+		!ContainsPid(oneWorkerResult, currentPid)) {
+		std::cerr << "FAIL: enumerate com um worker.\n";
+		return 1;
+	}
+
+	// Zero não é um limite útil. A biblioteca deve corrigir esse valor e usar
+	// pelo menos um trabalhador, em vez de deixar a consulta sem executar.
+	InspectionOptions zeroWorkers{};
+	zeroWorkers.include_image_path = false;
+	zeroWorkers.max_concurrent_processes = 0;
+	const QueryResult zeroWorkersResult = catalog.enumerate(zeroWorkers);
+	if (zeroWorkersResult.state == QueryState::failed ||
+		!ContainsPid(zeroWorkersResult, currentPid)) {
+		std::cerr << "FAIL: enumerate com zero workers.\n";
+		return 1;
+	}
+
+	// Quatro trabalhadores permitem que até quatro processos sejam analisados
+	// ao mesmo tempo, que é o limite padrão da biblioteca.
+	InspectionOptions severalWorkers{};
+	severalWorkers.include_image_path = false;
+	severalWorkers.max_concurrent_processes = 4;
+	const QueryResult severalWorkersResult = catalog.enumerate(severalWorkers);
+	if (severalWorkersResult.state == QueryState::failed ||
+		!ContainsPid(severalWorkersResult, currentPid)) {
+		std::cerr << "FAIL: enumerate com vários workers.\n";
+		return 1;
+	}
+
 	InspectionOptions withSignature{};
 	withSignature.include_signature = true;
 	const QueryResult byPidWithSignature = catalog.by_pid(currentPid, withSignature);

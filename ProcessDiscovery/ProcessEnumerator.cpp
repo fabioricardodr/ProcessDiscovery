@@ -341,6 +341,12 @@ namespace {
 		}
 		return details;
 	}
+
+	ProcessDetails InspectProcess(
+		std::uint32_t pid,
+		const InspectionOptions& options) {
+		return QueryProcessDetails(pid, options);
+	}
 }
 
 QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional<std::uint32_t> pid);
@@ -416,6 +422,17 @@ QueryResult QueryProcessByFullPath(std::wstring full_path, const InspectionOptio
 
 QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional<std::uint32_t> pid) {
 	QueryResult res;
+
+	// Define quantos processos podem ser analisados ao mesmo tempo.
+	// Se o usuário informar zero, usamos um processo por vez para evitar um valor inválido.
+	const std::size_t max_workers =
+		(std::max)(std::size_t{ 1 }, options.max_concurrent_processes);
+
+	// Guarda as análises que começaram, mas ainda não foram finalizadas.
+	// O índice informa em qual processo o resultado deve ser colocado depois.
+	std::vector<PendingInspection> pending;
+	pending.reserve(max_workers);
+
 	HANDLE h = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	SnapshotHandle snapshot(h);
 
@@ -453,91 +470,111 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 		return res;
 	}
 
+	// Coloca o resultado da análise no processo correto e registra eventuais problemas.
+	auto apply_details = [&res, &options](std::size_t process_index, ProcessDetails details) {
+		ProcessRecord& process = res.processes[process_index];
+		// Transfere os dados obtidos para o registro do processo.
+		// Isso evita copiar textos e listas grandes sem necessidade.
+		process.image_path = std::move(details.image_path);
+		process.creation_time_100ns = std::move(details.creation_time);
+		process.internal_name = std::move(details.internal_name);
+		process.modules = std::move(details.modules);
+		process.signature = std::move(details.signature);
+
+		// Se um campo tiver uma mensagem de erro, adiciona essa mensagem ao resultado geral.
+		auto add_field_diagnostic = [&res](const auto& field) {
+			if (field.error().has_value()) {
+				res.diagnostics.push_back(*field.error());
+			}
+		};
+
+		if (options.include_image_path && process.image_path.state() != FieldState::available) {
+			res.state = QueryState::partial;
+			add_field_diagnostic(process.image_path);
+		}
+		if (options.include_signature && process.signature.state() != FieldState::available) {
+			res.state = QueryState::partial;
+			add_field_diagnostic(process.signature);
+		}
+		if (process.creation_time_100ns.state() != FieldState::available) {
+			res.state = QueryState::partial;
+			add_field_diagnostic(process.creation_time_100ns);
+		}
+		if (options.include_internal_name && process.internal_name.state() != FieldState::available) {
+			res.state = QueryState::partial;
+			add_field_diagnostic(process.internal_name);
+		}
+		if (options.include_modules) {
+			if (process.modules.state() != FieldState::available) {
+				res.state = QueryState::partial;
+				add_field_diagnostic(process.modules);
+			}
+			else if (process.modules.value()->state != CollectionState::complete) {
+				res.state = QueryState::partial;
+				for (const ErrorInfo& error : process.modules.value()->diagnostics) {
+					res.diagnostics.push_back(error);
+				}
+			}
+		}
+	};
+
+	// Pega a análise mais antiga da lista e espera por ela se ainda estiver em andamento.
+	// Depois, coloca o resultado no processo correspondente.
+	auto collect_one = [&pending, &apply_details]() {
+		PendingInspection inspection = std::move(pending.front());
+		pending.erase(pending.begin());
+		apply_details(inspection.process_index, inspection.result.get());
+	};
+
+	BOOL has_next = TRUE;
 	do {
-		if (pid.has_value() && entry.th32ProcessID != *pid) {
-			res.processes.push_back(ProcessRecord{
-				entry.th32ProcessID,
-				Field<std::uint32_t>::available(entry.th32ParentProcessID),
-				Field<std::wstring>::available(entry.szExeFile),
-				Field<std::wstring>::not_requested(),
-				Field<std::wstring>::not_requested(),
-				Field<std::uint64_t>::not_requested(),
-				Field<std::wstring>::not_requested(),
-				Field<CollectionResult<ModuleRecord>>::not_requested(),
-				Field<SignatureStatus>::not_requested()
-			});
-			continue; // mantém os dados básicos para resolver parent_name; não abre o processo auxiliar
-		}
-
-		ProcessDetails details = QueryProcessDetails(entry.th32ProcessID, options);
-
-		if (options.include_image_path && details.image_path.state() != FieldState::available) {
-			res.state = QueryState::partial;
-			if (details.image_path.error().has_value()) {
-				res.diagnostics.push_back(*details.image_path.error());
-			}
-		}
-
-		if (options.include_signature && details.signature.state() != FieldState::available) {
-			res.state = QueryState::partial;
-			if (details.signature.error().has_value()) {
-				res.diagnostics.push_back(*details.signature.error());
-			}
-		}
-		
-		if (details.creation_time.state() != FieldState::available) {
-			res.state = QueryState::partial;
-			if (details.creation_time.error().has_value()) {
-				res.diagnostics.push_back(*details.creation_time.error());
-			}
-		}
-
-		if (options.include_internal_name && details.internal_name.state() != FieldState::available) {
-			res.state = QueryState::partial;
-			if (details.internal_name.error().has_value()) {
-				res.diagnostics.push_back(*details.internal_name.error());
-			}
-		}
-
-		if (options.include_modules &&
-			details.modules.state() != FieldState::available) {
-			res.state = QueryState::partial;
-
-			if (details.modules.error().has_value()) {
-				res.diagnostics.push_back(*details.modules.error());
-			}
-		}
-		else if (options.include_modules &&
-			details.modules.value()->state != CollectionState::complete) {
-			res.state = QueryState::partial;
-
-			for (const ErrorInfo& error : details.modules.value()->diagnostics) {
-				res.diagnostics.push_back(error);
-			}
-		}
-
+		// Primeiro salvamos os dados básicos encontrados no snapshot.
+		// Os dados extras ficam como "não solicitados" até a análise terminar.
 		res.processes.push_back(ProcessRecord{
 			entry.th32ProcessID,
 			Field<std::uint32_t>::available(entry.th32ParentProcessID),
 			Field<std::wstring>::available(entry.szExeFile),
-			details.image_path,
 			Field<std::wstring>::not_requested(),
-					details.creation_time,
-					details.internal_name,
-					details.modules,
-					details.signature
-			});
-	} while (Process32NextW(snapshot.get(), &entry));
+			Field<std::wstring>::not_requested(),
+			Field<std::uint64_t>::not_requested(),
+			Field<std::wstring>::not_requested(),
+			Field<CollectionResult<ModuleRecord>>::not_requested(),
+			Field<SignatureStatus>::not_requested()
+		});
 
-	const DWORD error = GetLastError();
-
-	if (error != ERROR_NO_MORE_FILES) {
-		res.state = QueryState::partial;
-		res.diagnostics.push_back(ErrorInfo{
-			"Process32NextW",
-			static_cast<std::uint32_t>(error),
-			"Não foi possível obter todos os processos."
+		// Na enumeração geral, analisamos todos os processos.
+		// Em uma busca por PID, analisamos somente o processo procurado.
+		// Os demais continuam na lista para podermos encontrar o nome do pai.
+		if (!pid.has_value() || entry.th32ProcessID == *pid) {
+			// Inicia a análise em paralelo, sem esperar a análise anterior terminar.
+			pending.push_back(PendingInspection{
+				res.processes.size() - 1,
+				entry.th32ProcessID,
+				std::async(std::launch::async, InspectProcess, entry.th32ProcessID, options)
 			});
+			// Quando atingimos o limite, esperamos uma análise terminar antes de iniciar outra.
+			if (pending.size() >= max_workers) {
+				collect_one();
+			}
+		}
+		has_next = Process32NextW(snapshot.get(), &entry);
+	} while (has_next);
+
+	// Terminamos de ler o snapshot; agora esperamos as análises que ainda faltam.
+	while (!pending.empty()) {
+		collect_one();
+	}
+
+	if (!has_next) {
+		const DWORD error = GetLastError();
+		if (error != ERROR_NO_MORE_FILES) {
+			res.state = QueryState::partial;
+			res.diagnostics.push_back(ErrorInfo{
+				"Process32NextW",
+				static_cast<std::uint32_t>(error),
+				"Não foi possível obter todos os processos."
+				});
+		}
 	}
 
 	for (ProcessRecord& process : res.processes) {
