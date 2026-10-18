@@ -7,6 +7,7 @@
 #include "SnapshotHandle.h"
 #include "ProcessEnumerator.h"
 #include <future>
+#include <deque>
 
 namespace {
 	class ProcessHandle {
@@ -430,8 +431,7 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 
 	// Guarda as análises que começaram, mas ainda não foram finalizadas.
 	// O índice informa em qual processo o resultado deve ser colocado depois.
-	std::vector<PendingInspection> pending;
-	pending.reserve(max_workers);
+	std::deque<PendingInspection> pending;
 
 	HANDLE h = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	SnapshotHandle snapshot(h);
@@ -520,10 +520,37 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 
 	// Pega a análise mais antiga da lista e espera por ela se ainda estiver em andamento.
 	// Depois, coloca o resultado no processo correspondente.
-	auto collect_one = [&pending, &apply_details]() {
+	auto collect_one = [&pending, &apply_details, &res, &options]() {
 		PendingInspection inspection = std::move(pending.front());
-		pending.erase(pending.begin());
-		apply_details(inspection.process_index, inspection.result.get());
+		pending.pop_front();
+		try {
+			apply_details(inspection.process_index, inspection.result.get());
+		}
+		catch (const std::exception& exception) {
+			// Uma falha em uma tarefa não deve derrubar a enumeração inteira.
+			// O processo continua no resultado, mas a consulta fica parcial.
+			ProcessRecord& process = res.processes[inspection.process_index];
+			const ErrorInfo error{
+				"Process inspection",
+				0,
+				std::string("A análise do processo falhou: ") + exception.what()
+			};
+			res.state = QueryState::partial;
+			res.diagnostics.push_back(error);
+			if (options.include_image_path) {
+				process.image_path = Field<std::wstring>::unavailable(error);
+			}
+			process.creation_time_100ns = Field<std::uint64_t>::unavailable(error);
+			if (options.include_internal_name) {
+				process.internal_name = Field<std::wstring>::unavailable(error);
+			}
+			if (options.include_modules) {
+				process.modules = Field<CollectionResult<ModuleRecord>>::unavailable(error);
+			}
+			if (options.include_signature) {
+				process.signature = Field<SignatureStatus>::unavailable(error);
+			}
+		}
 	};
 
 	BOOL has_next = TRUE;

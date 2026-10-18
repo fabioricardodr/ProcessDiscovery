@@ -332,6 +332,25 @@ int main() {
 		<< L", confiança: " << static_cast<int>(signature.trust)
 		<< L", WinTrust: " << signature.wintrust_status << L"\n";
 
+	// Combina todos os recursos opcionais em uma única consulta ao processo atual.
+	// Isso verifica que os campos solicitados não permanecem como not_requested.
+	InspectionOptions allOptionalFields{};
+	allOptionalFields.include_image_path = false;
+	allOptionalFields.include_internal_name = true;
+	allOptionalFields.include_signature = true;
+	allOptionalFields.include_modules = true;
+	allOptionalFields.max_concurrent_processes = 0;
+	const QueryResult allOptionalFieldsResult = catalog.by_pid(currentPid, allOptionalFields);
+	if (allOptionalFieldsResult.state == QueryState::failed ||
+		allOptionalFieldsResult.processes.size() != 1 ||
+		allOptionalFieldsResult.processes.front().image_path.state() != FieldState::not_requested ||
+		allOptionalFieldsResult.processes.front().internal_name.state() == FieldState::not_requested ||
+		allOptionalFieldsResult.processes.front().signature.state() == FieldState::not_requested ||
+		allOptionalFieldsResult.processes.front().modules.state() == FieldState::not_requested) {
+		std::cerr << "FAIL: combinação de opções opcionais não foi respeitada.\n";
+		return 1;
+	}
+
 	const QueryResult absent = catalog.by_full_path(imagePath + L".not-found", noImagePath);
 	if (absent.state == QueryState::failed || !absent.processes.empty()) {
 		std::cerr << "FAIL: busca negativa retornou falha global ou correspondências.\n";
