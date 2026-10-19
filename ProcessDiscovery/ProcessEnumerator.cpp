@@ -5,9 +5,10 @@
 #include <Softpub.h>
 #include <wintrust.h>
 #include "SnapshotHandle.h"
+#include "Win32Api.h"
+#include "VersionResourceReader.h"
+#include "AuthenticodeVerifier.h"
 #include "ProcessEnumerator.h"
-#include <future>
-#include <deque>
 
 namespace {
 	class ProcessHandle {
@@ -17,8 +18,9 @@ namespace {
 		explicit ProcessHandle(HANDLE h) : m_handle(h) {}
 		~ProcessHandle() {
 			if (m_handle != nullptr) {
-				CloseHandle(m_handle);
+				GetWin32Api().CloseHandle(m_handle);
 			}
+
 		}
 
 		ProcessHandle(const ProcessHandle&) = delete;
@@ -33,45 +35,17 @@ namespace {
 		}
 	};
 
+	std::optional<std::uint64_t> QueryCreationTimeByHandle(std::uint32_t pid) {
+		HANDLE handle = GetWin32Api().OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+		ProcessHandle process(handle);
+		if (!process.is_valid()) return std::nullopt;
+		FILETIME creation{}, exit{}, kernel{}, user{};
+		if (!GetWin32Api().GetProcessTimes(process.get(), &creation, &exit, &kernel, &user)) return std::nullopt;
+		return (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32) | creation.dwLowDateTime;
+	}
+
 	Field<SignatureStatus> QuerySignature(const std::wstring& image_path) {
-		SignatureStatus status{
-			SignaturePresence::unknown,
-			TrustState::indeterminate,
-			0,
-			std::nullopt,
-			L"WTD_REVOCATION_CHECK_END_CERT"
-		};
-
-		WINTRUST_FILE_INFO file_info{};
-		file_info.cbStruct = sizeof(file_info);
-		file_info.pcwszFilePath = image_path.c_str();
-
-		WINTRUST_DATA trust_data{};
-		trust_data.cbStruct = sizeof(trust_data);
-		trust_data.dwUIChoice = WTD_UI_NONE;
-		trust_data.fdwRevocationChecks = WTD_REVOKE_NONE;
-		trust_data.dwUnionChoice = WTD_CHOICE_FILE;
-		trust_data.pFile = &file_info;
-		trust_data.dwStateAction = WTD_STATEACTION_VERIFY;
-		trust_data.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
-
-		const GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-		const LONG verify_status = WinVerifyTrust(nullptr, const_cast<GUID*>(&action), &trust_data);
-		status.wintrust_status = verify_status;
-
-		trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
-		WinVerifyTrust(nullptr, const_cast<GUID*>(&action), &trust_data);
-
-		if (verify_status == ERROR_SUCCESS) {
-			status.presence = SignaturePresence::present;
-			status.trust = TrustState::valid;
-		}
-		else if (verify_status == TRUST_E_NOSIGNATURE) {
-			status.presence = SignaturePresence::absent;
-			status.trust = TrustState::not_evaluated;
-		}
-
-		return Field<SignatureStatus>::available(std::move(status));
+		return AuthenticodeVerifier{}.verify(image_path);
 	}
 	
 	struct ProcessDetails {
@@ -80,108 +54,27 @@ namespace {
 		Field<std::wstring> internal_name;
 		Field<CollectionResult<ModuleRecord>> modules;
 		Field<SignatureStatus> signature;
-	};
-
-	struct PendingInspection {
-		std::size_t process_index;
-		std::uint32_t pid;
-		std::future<ProcessDetails> result;
+		ObservationConsistency observation_consistency = ObservationConsistency::snapshot_only;
 	};
 
 	Field<std::wstring> QueryInternalName(const std::wstring& image_path) {
-		DWORD handle = 0;
-		// Obtém o tamanho necessário para o bloco de informações de versão do arquivo PE.
-		// O parâmetro `handle` é reservado pela API e não representa um HANDLE Win32 aberto.
-		const DWORD size = GetFileVersionInfoSizeW(image_path.c_str(), &handle);
-
-		if (size == 0) {
-			const DWORD error = GetLastError();
-			return Field<std::wstring>::unavailable(ErrorInfo{
-				"GetFileVersionInfoSizeW",
-				static_cast<std::uint32_t>(error),
-				"Não foi possível obter o tamanho das informações de versão."
-				});
-		}
-
-		std::vector<std::byte> version_data(size);
-		// Carrega na memória o recurso VERSIONINFO completo do executável.
-		// O buffer precisa ter exatamente, no mínimo, o tamanho retornado acima.
-		if (!GetFileVersionInfoW(image_path.c_str(), 0, size, version_data.data())) {
-			const DWORD error = GetLastError();
-			return Field<std::wstring>::unavailable(ErrorInfo{
-				"GetFileVersionInfoW",
-				static_cast<std::uint32_t>(error),
-				"Não foi possível obter as informações de versão do executável."
-				});
-		}
-
-		struct LanguageAndCodePage {
-			WORD language;
-			WORD code_page;
-		};
-
-		void* translation_data = nullptr;
-		UINT translation_size = 0;
-		// Localiza a tabela de pares idioma/code page que identifica as tabelas
-		// StringFileInfo disponíveis no recurso de versão.
-		if (!VerQueryValueW(
-			version_data.data(),
-			L"\\VarFileInfo\\Translation",
-			&translation_data,
-			&translation_size) ||
-			translation_size < sizeof(LanguageAndCodePage)) {
-			return Field<std::wstring>::unavailable(ErrorInfo{
-				"VerQueryValueW",
-				0,
-				"O executável não possui uma tabela de tradução de versão."
-				});
-		}
-
-		const auto* translations = static_cast<const LanguageAndCodePage*>(translation_data);
-		const std::size_t translation_count = translation_size / sizeof(LanguageAndCodePage);
-		for (std::size_t i = 0; i < translation_count; ++i) {
-			wchar_t sub_block[64]{};
-			// Monta o caminho do valor InternalName para a combinação de idioma
-			// e página de código encontrada na tabela Translation.
-			swprintf_s(
-				sub_block,
-				L"\\StringFileInfo\\%04x%04x\\InternalName",
-				translations[i].language,
-				translations[i].code_page);
-
-			void* value_data = nullptr;
-			UINT value_size = 0;
-			// Consulta o valor textual dentro do bloco VERSIONINFO carregado.
-			// O valor retornado normalmente inclui o terminador NUL, por isso ele
-			// é removido ao construir a std::wstring abaixo.
-			if (VerQueryValueW(version_data.data(), sub_block, &value_data, &value_size) &&
-				value_data != nullptr && value_size > 1) {
-				std::wstring internal_name(
-					static_cast<const wchar_t*>(value_data),
-					value_size > 0 ? value_size - 1 : 0);
-
-				while (!internal_name.empty() && internal_name.back() == L'\0') {
-					internal_name.pop_back();
-				}
-
-				return Field<std::wstring>::available(std::move(internal_name));
-			}
-		}
-
-		return Field<std::wstring>::unavailable(ErrorInfo{
-			"VerQueryValueW",
-			0,
-			"O executável não possui o campo InternalName."
-			});
+		return VersionResourceReader{}.read(image_path);
 	}
 
-	Field<CollectionResult<ModuleRecord>> QueryProcessModules(std::uint32_t pid) {
+	Field<CollectionResult<ModuleRecord>> QueryProcessModules(std::uint32_t pid, const StopToken* stop_token) {
 		CollectionResult<ModuleRecord> result;
-		HANDLE h = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+		HANDLE h = INVALID_HANDLE_VALUE;
+		DWORD snapshot_error = ERROR_SUCCESS;
+		for (int attempt = 0; attempt != 3; ++attempt) {
+			h = GetWin32Api().CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+			if (h != INVALID_HANDLE_VALUE) break;
+			snapshot_error = GetWin32Api().GetLastErrorValue();
+			if (snapshot_error != ERROR_BAD_LENGTH || attempt == 2) break;
+		}
 		SnapshotHandle snapshot(h);
 		if (!snapshot.is_valid()) {
-			const DWORD error = GetLastError();
-			result.state = CollectionState::failed;
+			const DWORD error = snapshot_error;
+			result.state = ResultState::failed;
 			result.diagnostics.push_back(ErrorInfo{
 				"CreateToolhelp32Snapshot",
 				static_cast<std::uint32_t>(error),
@@ -191,10 +84,10 @@ namespace {
 		}
 		MODULEENTRY32W entry{};
 		entry.dwSize = sizeof(entry);
-		if (!Module32FirstW(snapshot.get(), &entry)) {
-			const DWORD error = GetLastError();
+		if (!GetWin32Api().Module32FirstW(snapshot.get(), &entry)) {
+			const DWORD error = GetWin32Api().GetLastErrorValue();
 			if (error != ERROR_NO_MORE_FILES) {
-				result.state = CollectionState::failed;
+				result.state = ResultState::failed;
 				result.diagnostics.push_back(ErrorInfo{
 					"Module32FirstW",
 					static_cast<std::uint32_t>(error),
@@ -207,15 +100,24 @@ namespace {
 			}
 		}
 		do {
+			if (stop_token != nullptr && stop_token->stop_requested()) {
+				result.state = ResultState::partial;
+				result.diagnostics.push_back(ErrorInfo{
+					"StopToken", ERROR_CANCELLED,
+					"A enumeração de módulos foi cancelada pelo consumidor.",
+					ErrorDomain::cancellation
+				});
+				break;
+			}
 			result.items.push_back(ModuleRecord{
-				entry.szModule,
+				Field<std::wstring>::available(entry.szModule),
 				Field<std::wstring>::available(entry.szExePath),
 				reinterpret_cast<std::uint64_t>(entry.modBaseAddr)
 				});
-		} while (Module32NextW(snapshot.get(), &entry));
-		const DWORD error = GetLastError();
+		} while (GetWin32Api().Module32NextW(snapshot.get(), &entry));
+		const DWORD error = GetWin32Api().GetLastErrorValue();
 		if (error != ERROR_NO_MORE_FILES) {
-			result.state = CollectionState::partial;
+			result.state = ResultState::partial;
 			result.diagnostics.push_back(ErrorInfo{
 				"Module32NextW",
 				static_cast<std::uint32_t>(error),
@@ -226,12 +128,26 @@ namespace {
 	}
 
 	ProcessDetails QueryProcessDetails(std::uint32_t pid, const InspectionOptions& options) {
-		HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+		if (pid == 0 || pid == 4) {
+			const ErrorInfo info{
+				"OpenProcess",
+				ERROR_ACCESS_DENIED,
+				"PID reservado: a inspeção por handle não é solicitada."
+			};
+			ProcessDetails details;
+			if (options.include_image_path) details.image_path = Field<std::wstring>::access_denied(info);
+			if (options.include_internal_name) details.internal_name = Field<std::wstring>::access_denied(info);
+			if (options.include_modules) details.modules = Field<CollectionResult<ModuleRecord>>::access_denied(info);
+			if (options.include_signature) details.signature = Field<SignatureStatus>::access_denied(info);
+			details.creation_time = Field<std::uint64_t>::access_denied(info);
+			return details;
+		}
+		HANDLE h = GetWin32Api().OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
 		ProcessHandle process_handle(h);
 		ProcessDetails details;
 
 		if (!process_handle.is_valid()) {
-			const DWORD error = GetLastError();
+			const DWORD error = GetWin32Api().GetLastErrorValue();
 			const ErrorInfo info{
 				"OpenProcess",
 				static_cast<std::uint32_t>(error),
@@ -259,18 +175,19 @@ namespace {
 				: Field<std::uint64_t>::unavailable(info);
 			return details;
 		}
+		details.observation_consistency = ObservationConsistency::handle_only;
 
 		if (options.include_image_path) {
 			std::wstring path(_MAX_PATH, L'\0');
 			for (;;) {
 				DWORD length = static_cast<DWORD>(path.size());
-				if (QueryFullProcessImageNameW(process_handle.get(), 0, path.data(), &length)) {
+				if (GetWin32Api().QueryFullProcessImageNameW(process_handle.get(), 0, path.data(), &length)) {
 					path.resize(length);
 					details.image_path = Field<std::wstring>::available(std::move(path));
 					break;
 				}
 
-				const DWORD error = GetLastError();
+				const DWORD error = GetWin32Api().GetLastErrorValue();
 				if (error == ERROR_INSUFFICIENT_BUFFER && path.size() < 32768) {
 					const std::size_t next_size = (std::min)(path.size() * 2, static_cast<std::size_t>(32768));
 					path.resize(next_size);
@@ -293,14 +210,14 @@ namespace {
 		FILETIME exit_time{};
 		FILETIME kernel_time{};
 		FILETIME user_time{};
-		if (GetProcessTimes(process_handle.get(), &creation_time, &exit_time, &kernel_time, &user_time)) {
+		if (GetWin32Api().GetProcessTimes(process_handle.get(), &creation_time, &exit_time, &kernel_time, &user_time)) {
 			const std::uint64_t ticks =
 				(static_cast<std::uint64_t>(creation_time.dwHighDateTime) << 32) |
 				creation_time.dwLowDateTime;
 			details.creation_time = Field<std::uint64_t>::available(ticks);
 		}
 		else {
-			const DWORD error = GetLastError();
+			const DWORD error = GetWin32Api().GetLastErrorValue();
 			const ErrorInfo info{
 				"GetProcessTimes",
 				static_cast<std::uint32_t>(error),
@@ -325,7 +242,66 @@ namespace {
 		}
 
 		if (options.include_modules) {
-			details.modules = QueryProcessModules(pid);
+			USHORT process_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+			USHORT native_machine = IMAGE_FILE_MACHINE_UNKNOWN;
+			if (!GetWin32Api().IsWow64Process2(process_handle.get(), &process_machine, &native_machine)) {
+				details.modules = Field<CollectionResult<ModuleRecord>>::available_unverified(
+					CollectionResult<ModuleRecord>{ {}, ResultState::partial, {
+						ErrorInfo{
+							"IsWow64Process2", GetWin32Api().GetLastErrorValue(),
+							"A arquitetura do processo não pôde ser comprovada.",
+							ErrorDomain::validation
+						}
+					} });
+			}
+#if defined(_WIN64)
+			else if (process_machine != IMAGE_FILE_MACHINE_UNKNOWN) {
+				details.modules = Field<CollectionResult<ModuleRecord>>::unsupported_architecture(
+					ErrorInfo{
+						"IsWow64Process2", ERROR_BAD_EXE_FORMAT,
+						"A enumeração de módulos cross-bitness não é suportada nesta build x64.",
+						ErrorDomain::validation
+					});
+			}
+#endif
+			if (details.modules.state() != FieldState::unsupported_architecture &&
+				details.modules.state() != FieldState::available_unverified) {
+			FILETIME before_creation{}, before_exit{}, before_kernel{}, before_user{};
+			const bool identity_before = GetWin32Api().GetProcessTimes(
+				process_handle.get(), &before_creation, &before_exit, &before_kernel, &before_user) != FALSE;
+			const DWORD wait_before = GetWin32Api().WaitForSingleObject(process_handle.get(), 0);
+			details.modules = QueryProcessModules(pid, options.stop_token);
+			FILETIME after_creation{}, after_exit{}, after_kernel{}, after_user{};
+			const bool identity_after = GetWin32Api().GetProcessTimes(
+				process_handle.get(), &after_creation, &after_exit, &after_kernel, &after_user) != FALSE;
+			const DWORD wait_after = GetWin32Api().WaitForSingleObject(process_handle.get(), 0);
+			if (wait_before == WAIT_OBJECT_0 || wait_after == WAIT_OBJECT_0) {
+				if (details.modules.value().has_value()) {
+					CollectionResult<ModuleRecord> modules = *details.modules.value();
+					modules.state = ResultState::partial;
+					modules.diagnostics.push_back(ErrorInfo{
+						"WaitForSingleObject", ERROR_PROCESS_ABORTED,
+						"O processo encerrou durante a enumeração de módulos.",
+						ErrorDomain::win32
+					});
+					details.modules = Field<CollectionResult<ModuleRecord>>::available_unverified(std::move(modules));
+				}
+			}
+			const bool same_identity = identity_before && identity_after &&
+				before_creation.dwHighDateTime == after_creation.dwHighDateTime &&
+				before_creation.dwLowDateTime == after_creation.dwLowDateTime;
+			if (!same_identity && details.modules.value().has_value()) {
+				CollectionResult<ModuleRecord> modules = *details.modules.value();
+				modules.state = ResultState::partial;
+				modules.diagnostics.push_back(ErrorInfo{
+					"GetProcessTimes", ERROR_INVALID_DATA,
+					"A identidade do processo não pôde ser comprovada antes e depois da enumeração de módulos.",
+					ErrorDomain::validation
+				});
+				details.modules = Field<CollectionResult<ModuleRecord>>::available_unverified(
+					std::move(modules));
+			}
+			}
 		}
 
 		if (options.include_signature) {
@@ -355,7 +331,7 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 QueryResult QueryProcessByPid(std::uint32_t pid, const InspectionOptions& options) {
 	QueryResult res = QueryProcessFiltered(options, pid);
 
-	if (res.state == QueryState::failed) {		
+	if (res.state == ResultState::failed) {
 		return res;
 	}
 
@@ -377,14 +353,25 @@ QueryResult QueryProcessByPid(std::uint32_t pid, const InspectionOptions& option
 }
 
 QueryResult QueryProcessByName(std::wstring name, const InspectionOptions& options) {
+	if (name.empty()) {
+		QueryResult result;
+		result.state = ResultState::failed;
+		result.fatal_error = ErrorInfo{
+			"by_name",
+			ERROR_INVALID_PARAMETER,
+			"O nome do processo não pode ser vazio.",
+			ErrorDomain::validation
+		};
+		return result;
+	}
 	QueryResult res = QueryProcess(options);
 
-	if (res.state == QueryState::failed) {
+	if (res.state == ResultState::failed) {
 		return res;
 	}
 
 	std::erase_if(res.processes, [name](const ProcessRecord& process) {
-		return CompareStringOrdinal(
+		return GetWin32Api().CompareStringOrdinal(
 			process.name.value()->c_str(), -1,
 			name.c_str(), -1,
 			TRUE) != CSTR_EQUAL;
@@ -394,24 +381,42 @@ QueryResult QueryProcessByName(std::wstring name, const InspectionOptions& optio
 }
 
 QueryResult QueryProcessByFullPath(std::wstring full_path, const InspectionOptions& options) {
+	const bool has_drive = full_path.size() >= 3 && full_path[1] == L':' &&
+		(full_path[2] == L'\\' || full_path[2] == L'/');
+	const bool is_unc = full_path.starts_with(L"\\\\");
+	const bool is_extended = full_path.starts_with(L"\\\\?\\");
+	if (full_path.empty() || (!has_drive && !is_unc && !is_extended)) {
+		QueryResult result;
+		result.state = ResultState::failed;
+		result.fatal_error = ErrorInfo{
+			"by_full_path",
+			ERROR_INVALID_NAME,
+			"O caminho deve ser absoluto, UNC ou de formato \\?\\.",
+			ErrorDomain::validation
+		};
+		return result;
+	}
 	QueryResult res = QueryProcess(InspectionOptions{
 		true, // garante que o caminho da imagem seja incluído na consulta
 		options.include_internal_name,
 		options.include_signature,
 		options.include_modules,
-		options.max_concurrent_processes
+		options.allow_remote_file_inspection,
+		options.stop_token
 		});
 
-	if (res.state == QueryState::failed) {
+	if (res.state == ResultState::failed) {
 		return res;
 	}
 	
-	std::erase_if(res.processes, [full_path](const ProcessRecord& process) {
+	std::erase_if(res.processes, [full_path, &res](const ProcessRecord& process) {
 		if (process.image_path.state() != FieldState::available) {
+			++res.unevaluable_processes;
+			res.state = ResultState::partial;
 			return true; // remove se não tiver caminho de imagem disponível
 		}
 
-		return CompareStringOrdinal(
+		return GetWin32Api().CompareStringOrdinal(
 			process.image_path.value()->c_str(), -1,
 			full_path.c_str(), -1,
 			TRUE) != CSTR_EQUAL;
@@ -426,20 +431,13 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 
 	// Define quantos processos podem ser analisados ao mesmo tempo.
 	// Se o usuário informar zero, usamos um processo por vez para evitar um valor inválido.
-	const std::size_t max_workers =
-		(std::max)(std::size_t{ 1 }, options.max_concurrent_processes);
-
-	// Guarda as análises que começaram, mas ainda não foram finalizadas.
-	// O índice informa em qual processo o resultado deve ser colocado depois.
-	std::deque<PendingInspection> pending;
-
-	HANDLE h = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	HANDLE h = GetWin32Api().CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 	SnapshotHandle snapshot(h);
 
 	if (!snapshot.is_valid()) {
-		const DWORD error = GetLastError();
+		const DWORD error = GetWin32Api().GetLastErrorValue();
 
-		res.state = QueryState::failed;
+		res.state = ResultState::failed;
 		res.fatal_error = ErrorInfo{
 			"CreateToolhelp32Snapshot",
 			static_cast<std::uint32_t>(error),
@@ -453,14 +451,14 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 
 	entry.dwSize = sizeof(entry);
 
-	if (!Process32FirstW(snapshot.get(), &entry)) {
-		const DWORD error = GetLastError();
+	if (!GetWin32Api().Process32FirstW(snapshot.get(), &entry)) {
+		const DWORD error = GetWin32Api().GetLastErrorValue();
 
 		if (error == ERROR_NO_MORE_FILES) {
 			return res; // ainda está complete e vazio
 		}
 
-		res.state = QueryState::failed;
+		res.state = ResultState::failed;
 		res.fatal_error = ErrorInfo{
 			"Process32FirstW",
 			static_cast<std::uint32_t>(error),
@@ -480,6 +478,7 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 		process.internal_name = std::move(details.internal_name);
 		process.modules = std::move(details.modules);
 		process.signature = std::move(details.signature);
+		process.observation_consistency = details.observation_consistency;
 
 		// Se um campo tiver uma mensagem de erro, adiciona essa mensagem ao resultado geral.
 		auto add_field_diagnostic = [&res](const auto& field) {
@@ -489,28 +488,28 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 		};
 
 		if (options.include_image_path && process.image_path.state() != FieldState::available) {
-			res.state = QueryState::partial;
+			res.state = ResultState::partial;
 			add_field_diagnostic(process.image_path);
 		}
 		if (options.include_signature && process.signature.state() != FieldState::available) {
-			res.state = QueryState::partial;
+			res.state = ResultState::partial;
 			add_field_diagnostic(process.signature);
 		}
 		if (process.creation_time_100ns.state() != FieldState::available) {
-			res.state = QueryState::partial;
+			res.state = ResultState::partial;
 			add_field_diagnostic(process.creation_time_100ns);
 		}
 		if (options.include_internal_name && process.internal_name.state() != FieldState::available) {
-			res.state = QueryState::partial;
+			res.state = ResultState::partial;
 			add_field_diagnostic(process.internal_name);
 		}
 		if (options.include_modules) {
 			if (process.modules.state() != FieldState::available) {
-				res.state = QueryState::partial;
+				res.state = ResultState::partial;
 				add_field_diagnostic(process.modules);
 			}
-			else if (process.modules.value()->state != CollectionState::complete) {
-				res.state = QueryState::partial;
+			else if (process.modules.value()->state != ResultState::complete) {
+				res.state = ResultState::partial;
 				for (const ErrorInfo& error : process.modules.value()->diagnostics) {
 					res.diagnostics.push_back(error);
 				}
@@ -518,43 +517,17 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 		}
 	};
 
-	// Pega a análise mais antiga da lista e espera por ela se ainda estiver em andamento.
-	// Depois, coloca o resultado no processo correspondente.
-	auto collect_one = [&pending, &apply_details, &res, &options]() {
-		PendingInspection inspection = std::move(pending.front());
-		pending.pop_front();
-		try {
-			apply_details(inspection.process_index, inspection.result.get());
-		}
-		catch (const std::exception& exception) {
-			// Uma falha em uma tarefa não deve derrubar a enumeração inteira.
-			// O processo continua no resultado, mas a consulta fica parcial.
-			ProcessRecord& process = res.processes[inspection.process_index];
-			const ErrorInfo error{
-				"Process inspection",
-				0,
-				std::string("A análise do processo falhou: ") + exception.what()
-			};
-			res.state = QueryState::partial;
-			res.diagnostics.push_back(error);
-			if (options.include_image_path) {
-				process.image_path = Field<std::wstring>::unavailable(error);
-			}
-			process.creation_time_100ns = Field<std::uint64_t>::unavailable(error);
-			if (options.include_internal_name) {
-				process.internal_name = Field<std::wstring>::unavailable(error);
-			}
-			if (options.include_modules) {
-				process.modules = Field<CollectionResult<ModuleRecord>>::unavailable(error);
-			}
-			if (options.include_signature) {
-				process.signature = Field<SignatureStatus>::unavailable(error);
-			}
-		}
-	};
-
 	BOOL has_next = TRUE;
 	do {
+		if (options.stop_token != nullptr && options.stop_token->stop_requested()) {
+			res.state = ResultState::partial;
+			res.diagnostics.push_back(ErrorInfo{
+				"StopToken",
+				ERROR_CANCELLED,
+				"A enumeração foi cancelada pelo consumidor."
+			});
+			break;
+		}
 		// Primeiro salvamos os dados básicos encontrados no snapshot.
 		// Os dados extras ficam como "não solicitados" até a análise terminar.
 		res.processes.push_back(ProcessRecord{
@@ -573,29 +546,15 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 		// Em uma busca por PID, analisamos somente o processo procurado.
 		// Os demais continuam na lista para podermos encontrar o nome do pai.
 		if (!pid.has_value() || entry.th32ProcessID == *pid) {
-			// Inicia a análise em paralelo, sem esperar a análise anterior terminar.
-			pending.push_back(PendingInspection{
-				res.processes.size() - 1,
-				entry.th32ProcessID,
-				std::async(std::launch::async, InspectProcess, entry.th32ProcessID, options)
-			});
-			// Quando atingimos o limite, esperamos uma análise terminar antes de iniciar outra.
-			if (pending.size() >= max_workers) {
-				collect_one();
-			}
+			apply_details(res.processes.size() - 1, InspectProcess(entry.th32ProcessID, options));
 		}
-		has_next = Process32NextW(snapshot.get(), &entry);
+		has_next = GetWin32Api().Process32NextW(snapshot.get(), &entry);
 	} while (has_next);
 
-	// Terminamos de ler o snapshot; agora esperamos as análises que ainda faltam.
-	while (!pending.empty()) {
-		collect_one();
-	}
-
 	if (!has_next) {
-		const DWORD error = GetLastError();
+		const DWORD error = GetWin32Api().GetLastErrorValue();
 		if (error != ERROR_NO_MORE_FILES) {
-			res.state = QueryState::partial;
+			res.state = ResultState::partial;
 			res.diagnostics.push_back(ErrorInfo{
 				"Process32NextW",
 				static_cast<std::uint32_t>(error),
@@ -611,14 +570,32 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 					return p.pid == ppid && p.pid != pid;
 				});
 			if (it != res.processes.end()) {
+				if (it->creation_time_100ns.state() == FieldState::available &&
+					it->creation_time_100ns.value().has_value()) {
+					const std::optional<std::uint64_t> current_parent_creation = QueryCreationTimeByHandle(it->pid);
+					if (current_parent_creation.has_value() &&
+						current_parent_creation.value() != it->creation_time_100ns.value().value()) {
+						const ErrorInfo mismatch{
+							"GetProcessTimes", ERROR_INVALID_DATA,
+							"O PID do processo pai foi reutilizado durante a observação.",
+							ErrorDomain::validation
+						};
+						process.parent_name = Field<std::wstring>::failure(mismatch);
+						process.observation_consistency = ObservationConsistency::mismatch_detected;
+						continue;
+					}
+				}
 				process.parent_name = it->name;
 			}
 			else {
-				process.parent_name = Field<std::wstring>::unavailable(ErrorInfo{
+				const ErrorInfo diagnostic{
 					"Process32FirstW/Process32NextW",
 					0,
-					"Não foi possível encontrar o processo pai na lista de processos."
-					});
+					"O processo pai não foi observado na consulta atual; o nome não foi confirmado.",
+					ErrorDomain::validation
+				};
+				process.parent_name = Field<std::wstring>::available_unverified(
+					L"<pai não observado>", diagnostic);
 			}
 		}
 		else {

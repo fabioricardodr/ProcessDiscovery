@@ -1,5 +1,6 @@
 #pragma once
 #include "framework.h"
+#include "Win32Api.h"
 
 class SnapshotHandle
 {
@@ -8,7 +9,7 @@ public:
 
 	~SnapshotHandle() {
 		if (m_handle != INVALID_HANDLE_VALUE) {
-			CloseHandle(m_handle);
+			GetWin32Api().CloseHandle(m_handle);
 		}
 	}
 
