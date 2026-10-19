@@ -167,6 +167,9 @@
     <ClInclude Include="ProcessEnumerator.h" />
     <ClInclude Include="ProcessTypes.h" />
     <ClInclude Include="SnapshotHandle.h" />
+    <ClInclude Include="Win32Api.h" />
+    <ClInclude Include="VersionResourceReader.h" />
+    <ClInclude Include="AuthenticodeVerifier.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp" />
@@ -180,6 +183,9 @@
     <ClCompile Include="ProcessEnumerator.cpp" />
     <ClCompile Include="ProcessTypesCompileCheck.cpp" />
     <ClCompile Include="SnapshotHandle.cpp" />
+    <ClCompile Include="Win32Api.cpp" />
+    <ClCompile Include="VersionResourceReader.cpp" />
+    <ClCompile Include="AuthenticodeVerifier.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

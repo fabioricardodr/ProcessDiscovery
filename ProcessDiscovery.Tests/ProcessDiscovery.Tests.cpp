@@ -51,7 +51,7 @@ int main() {
 	noImagePath.include_image_path = false;
 
 	const QueryResult byPid = catalog.by_pid(currentPid, noImagePath);
-	if (byPid.state == QueryState::failed || byPid.processes.size() != 1 ||
+	if (byPid.state == ResultState::failed || byPid.processes.size() != 1 ||
 		byPid.processes.front().pid != currentPid ||
 		byPid.processes.front().image_path.state() != FieldState::not_requested) {
 		std::cerr << "FAIL: by_pid ou include_image_path=false.\n";
@@ -84,7 +84,7 @@ int main() {
 	}
 
 	const QueryResult byPidWithImage = catalog.by_pid(currentPid);
-	if (byPidWithImage.state == QueryState::failed ||
+	if (byPidWithImage.state == ResultState::failed ||
 		byPidWithImage.processes.size() != 1 ||
 		byPidWithImage.processes.front().pid != currentPid ||
 		byPidWithImage.processes.front().image_path.state() != FieldState::available ||
@@ -97,7 +97,7 @@ int main() {
 	InspectionOptions withInternalName{};
 	withInternalName.include_internal_name = true;
 	const QueryResult byPidWithInternalName = catalog.by_pid(currentPid, withInternalName);
-	if (byPidWithInternalName.state == QueryState::failed ||
+	if (byPidWithInternalName.state == ResultState::failed ||
 		byPidWithInternalName.processes.size() != 1 ||
 		(byPidWithInternalName.processes.front().internal_name.state() == FieldState::available &&
 			(!byPidWithInternalName.processes.front().internal_name.value().has_value() ||
@@ -114,7 +114,7 @@ int main() {
 
 	const std::uint32_t missingPid = 0xFFFFFFFFu;
 	const QueryResult missing = catalog.by_pid(missingPid, noImagePath);
-	if (missing.state == QueryState::failed || !missing.processes.empty()) {
+	if (missing.state == ResultState::failed || !missing.processes.empty()) {
 		std::cerr << "FAIL: by_pid para PID inexistente.\n";
 		return 1;
 	}
@@ -139,7 +139,7 @@ int main() {
 	}
 
 	const QueryResult byName = catalog.by_name(caseVariant, noImagePath);
-	if (byName.state == QueryState::failed || !ContainsPid(byName, currentPid)) {
+	if (byName.state == ResultState::failed || !ContainsPid(byName, currentPid)) {
 		std::cerr << "FAIL: by_name não encontrou o processo atual ignorando caixa.\n";
 		return 1;
 	}
@@ -156,7 +156,7 @@ int main() {
 			foundByPath = true;
 		}
 	}
-	if (byPath.state == QueryState::failed || !foundByPath) {
+	if (byPath.state == ResultState::failed || !foundByPath) {
 		std::cerr << "FAIL: by_full_path não encontrou o processo atual.\n";
 		return 1;
 	}
@@ -184,7 +184,7 @@ int main() {
 	}
 
 	const QueryResult all = catalog.enumerate(noImagePath);
-	if (all.state == QueryState::failed || !ContainsPid(all, currentPid)) {
+	if (all.state == ResultState::failed || !ContainsPid(all, currentPid)) {
 		std::cerr << "FAIL: enumerate não incluiu o processo atual.\n";
 		return 1;
 	}
@@ -202,7 +202,7 @@ int main() {
 	InspectionOptions allWithInternalName{};
 	allWithInternalName.include_internal_name = true;
 	const QueryResult allWithMetadata = catalog.enumerate(allWithInternalName);
-	if (allWithMetadata.state == QueryState::failed || allWithMetadata.processes.empty()) {
+	if (allWithMetadata.state == ResultState::failed || allWithMetadata.processes.empty()) {
 		std::cerr << "FAIL: enumerate com include_internal_name não retornou processos.\n";
 		return 1;
 	}
@@ -227,7 +227,7 @@ int main() {
 	InspectionOptions allWithSignaturesOptions{};
 	allWithSignaturesOptions.include_signature = true;
 	const QueryResult allWithSignatures = catalog.enumerate(allWithSignaturesOptions);
-	if (allWithSignatures.state == QueryState::failed || allWithSignatures.processes.empty()) {
+	if (allWithSignatures.state == ResultState::failed || allWithSignatures.processes.empty()) {
 		std::cerr << "FAIL: enumerate com include_signature não retornou processos.\n";
 		return 1;
 	}
@@ -248,7 +248,7 @@ int main() {
 		case SignaturePresence::present:
 			++signaturesPresent;
 			break;
-		case SignaturePresence::absent:
+		case SignaturePresence::no_embedded_signature:
 			++signaturesAbsent;
 			break;
 		case SignaturePresence::unknown:
@@ -265,7 +265,7 @@ int main() {
 	InspectionOptions withModules{};
 	withModules.include_modules = true;
 	const QueryResult byPidWithModules = catalog.by_pid(currentPid, withModules);
-	if (byPidWithModules.state == QueryState::failed ||
+	if (byPidWithModules.state == ResultState::failed ||
 		byPidWithModules.processes.size() != 1 ||
 		byPidWithModules.processes.front().modules.state() != FieldState::available ||
 		!byPidWithModules.processes.front().modules.value().has_value()) {
@@ -275,15 +275,48 @@ int main() {
 
 	const auto& modules = *byPidWithModules.processes.front().modules.value();
 	std::wcout << L"INFO: módulos do processo atual: " << modules.items.size() << L"\n";
-	if (modules.state == CollectionState::failed) {
+	if (modules.state == ResultState::failed) {
 		std::cerr << "FAIL: coleta de módulos falhou.\n";
+		return 1;
+	}
+
+	// Este cenário usa apenas um trabalhador. Assim, cada processo é analisado
+	// antes que o próximo comece, simulando uma execução sequencial.
+	InspectionOptions oneWorker{};
+	oneWorker.include_image_path = false;
+	const QueryResult oneWorkerResult = catalog.enumerate(oneWorker);
+	if (oneWorkerResult.state == ResultState::failed ||
+		!ContainsPid(oneWorkerResult, currentPid)) {
+		std::cerr << "FAIL: enumerate com um worker.\n";
+		return 1;
+	}
+
+	// Zero não é um limite útil. A biblioteca deve corrigir esse valor e usar
+	// pelo menos um trabalhador, em vez de deixar a consulta sem executar.
+	InspectionOptions zeroWorkers{};
+	zeroWorkers.include_image_path = false;
+	const QueryResult zeroWorkersResult = catalog.enumerate(zeroWorkers);
+	if (zeroWorkersResult.state == ResultState::failed ||
+		!ContainsPid(zeroWorkersResult, currentPid)) {
+		std::cerr << "FAIL: enumerate com zero workers.\n";
+		return 1;
+	}
+
+	// Quatro trabalhadores permitem que até quatro processos sejam analisados
+	// ao mesmo tempo, que é o limite padrão da biblioteca.
+	InspectionOptions severalWorkers{};
+	severalWorkers.include_image_path = false;
+	const QueryResult severalWorkersResult = catalog.enumerate(severalWorkers);
+	if (severalWorkersResult.state == ResultState::failed ||
+		!ContainsPid(severalWorkersResult, currentPid)) {
+		std::cerr << "FAIL: enumerate com vários workers.\n";
 		return 1;
 	}
 
 	InspectionOptions withSignature{};
 	withSignature.include_signature = true;
 	const QueryResult byPidWithSignature = catalog.by_pid(currentPid, withSignature);
-	if (byPidWithSignature.state == QueryState::failed ||
+	if (byPidWithSignature.state == ResultState::failed ||
 		byPidWithSignature.processes.size() != 1 ||
 		byPidWithSignature.processes.front().signature.state() != FieldState::available ||
 		!byPidWithSignature.processes.front().signature.value().has_value()) {
@@ -296,14 +329,32 @@ int main() {
 		<< L", confiança: " << static_cast<int>(signature.trust)
 		<< L", WinTrust: " << signature.wintrust_status << L"\n";
 
+	// Combina todos os recursos opcionais em uma única consulta ao processo atual.
+	// Isso verifica que os campos solicitados não permanecem como not_requested.
+	InspectionOptions allOptionalFields{};
+	allOptionalFields.include_image_path = false;
+	allOptionalFields.include_internal_name = true;
+	allOptionalFields.include_signature = true;
+	allOptionalFields.include_modules = true;
+	const QueryResult allOptionalFieldsResult = catalog.by_pid(currentPid, allOptionalFields);
+	if (allOptionalFieldsResult.state == ResultState::failed ||
+		allOptionalFieldsResult.processes.size() != 1 ||
+		allOptionalFieldsResult.processes.front().image_path.state() != FieldState::not_requested ||
+		allOptionalFieldsResult.processes.front().internal_name.state() == FieldState::not_requested ||
+		allOptionalFieldsResult.processes.front().signature.state() == FieldState::not_requested ||
+		allOptionalFieldsResult.processes.front().modules.state() == FieldState::not_requested) {
+		std::cerr << "FAIL: combinação de opções opcionais não foi respeitada.\n";
+		return 1;
+	}
+
 	const QueryResult absent = catalog.by_full_path(imagePath + L".not-found", noImagePath);
-	if (absent.state == QueryState::failed || !absent.processes.empty()) {
+	if (absent.state == ResultState::failed || !absent.processes.empty()) {
 		std::cerr << "FAIL: busca negativa retornou falha global ou correspondências.\n";
 		return 1;
 	}
 
 	std::wcout << L"PASS: enumerate, by_pid, by_name e by_full_path para PID " << currentPid << L".\n";
-	if (absent.state == QueryState::partial) {
+	if (absent.state == ResultState::partial) {
 		std::wcout << L"INFO: busca negativa inconclusiva (partial), diagnósticos: "
 			<< absent.diagnostics.size() << L".\n";
 	}

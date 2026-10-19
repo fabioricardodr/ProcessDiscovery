@@ -6,6 +6,7 @@
 #include <vector>
 #include <utility>
 #include <cstddef>
+#include <functional>
 
 enum class FieldState {
     available,
@@ -14,13 +15,25 @@ enum class FieldState {
     access_denied,
     process_exited,
     unsupported_architecture,
+    available_unverified,
     error
+};
+
+enum class ErrorDomain {
+    none,
+    win32,
+    wintrust,
+    version_resource,
+    validation,
+    cancellation,
+    internal
 };
 
 struct ErrorInfo {
     std::string operation;
     std::uint32_t native_code{}; // código nativo bruto; operation identifica a origem
     std::string message;
+    ErrorDomain domain = ErrorDomain::none;
 };
 
 template<class T>
@@ -34,6 +47,10 @@ public:
 
     static Field unavailable(std::optional<ErrorInfo> diagnostic = std::nullopt) {
         return Field(FieldState::unavailable, std::nullopt, std::move(diagnostic));
+    }
+
+    static Field available_unverified(T value, std::optional<ErrorInfo> diagnostic = std::nullopt) {
+        return Field(FieldState::available_unverified, std::move(value), std::move(diagnostic));
     }
 
     static Field not_requested() {
@@ -76,16 +93,16 @@ enum class ObservationConsistency {
     mismatch_detected
 };
 
-enum class CollectionState { complete, partial, failed };
+enum class ResultState { complete, partial, failed };
 
 template<class T>
 struct CollectionResult {
     std::vector<T> items;
-    CollectionState state = CollectionState::complete;
+    ResultState state = ResultState::complete;
     std::vector<ErrorInfo> diagnostics;
 };
 
-enum class SignaturePresence { present, absent, unknown };
+enum class SignaturePresence { present, no_embedded_signature, unknown };
 enum class TrustState { valid, invalid, indeterminate, not_evaluated };
 
 struct SignatureStatus {
@@ -97,7 +114,7 @@ struct SignatureStatus {
 };
 
 struct ModuleRecord {
-    std::wstring name;
+    Field<std::wstring> name;
     Field<std::wstring> path;
     std::uint64_t base_address = 0;
 };
@@ -112,15 +129,27 @@ struct ProcessRecord {
     Field<std::wstring> internal_name;
     Field<CollectionResult<ModuleRecord>> modules;
     Field<SignatureStatus> signature;
+    ObservationConsistency observation_consistency = ObservationConsistency::snapshot_only;
 };
-
-enum class QueryState { complete, partial, failed };
 
 struct QueryResult {
     std::vector<ProcessRecord> processes;
-    QueryState state = QueryState::complete;
+    ResultState state = ResultState::complete;
     std::optional<ErrorInfo> fatal_error;
     std::vector<ErrorInfo> diagnostics;
+    std::size_t unevaluable_processes = 0;
+};
+
+class StopToken {
+public:
+    using Predicate = std::function<bool()>;
+
+    StopToken() = default;
+    explicit StopToken(Predicate predicate) : predicate_(std::move(predicate)) {}
+    bool stop_requested() const { return predicate_ != nullptr && predicate_(); }
+
+private:
+    Predicate predicate_;
 };
 
 struct InspectionOptions {
@@ -128,5 +157,6 @@ struct InspectionOptions {
     bool include_internal_name = false;
     bool include_signature = false;
     bool include_modules = false;
-    std::size_t max_concurrent_processes = 4;
+    bool allow_remote_file_inspection = false;
+    const StopToken* stop_token = nullptr;
 };

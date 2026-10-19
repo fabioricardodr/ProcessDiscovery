@@ -1,8 +1,10 @@
 <Solution>
   <Configurations>
     <Platform Name="x64" />
-    <Platform Name="x86" />
+    <Platform Name="Win32" />
   </Configurations>
   <Project Path="ProcessDiscovery.Tests/ProcessDiscovery.Tests.vcxproj" Id="134816d1-e4f7-4ddc-9296-eca1324e437e" />
   <Project Path="ProcessDiscovery/ProcessDiscovery.vcxproj" Id="c5ea320a-d5eb-4beb-8c5c-3149c50dbd9e" />
+  <Project Path="ProcessDiscovery.Cli.vcxproj" Id="d6b01b25-4d0f-4d5b-9a4e-4c76a0a5f001" />
+  <Project Path="ProcessDiscovery.LoaderTest.vcxproj" Id="7d1e86c1-6bb9-4bd1-a2bb-3c4d7f159e31" />
 </Solution>
