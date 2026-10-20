@@ -187,8 +187,22 @@ std::string SignatureValue(const Field<SignatureStatus>& field, const std::funct
 }
 
 std::string FormatHelp() {
-	return "ProcessDiscovery\nUso: list|query-pid <pid>|query-name <nome>|query-path <caminho> [flags] [--format tsv|json|legacy]\n";
+	return "ProcessDiscovery\n"
+		"Uso: list [--advanced] [--signature] [--internal-name] [--modules] [--no-image-path]\n"
+		"     query-pid <pid>|query-name <nome>|query-path <caminho> [flags] [--format tsv|json|legacy]\n"
+		"\n"
+		"list usa por padrao a saida compacta: <pid>\\t<nome>[\\t<status>...]\\n.\n"
+		"As colunas opcionais aparecem nesta ordem: --signature, --internal-name, --modules.\n"
+		"Cada status e true, false ou error; error significa que a analise nao foi conclusiva.\n"
+		"Use --advanced para preservar a saida detalhada legada. O formato padrao mudou;\n"
+		"consumidores legados devem usar --advanced.\n"
+		"Avisos: PPL, permissoes, cross-bitness, volumes remotos, corridas de processo e bloqueios de modulos podem produzir resultado parcial.\n"
+		"no_embedded_signature significa que nao foi encontrado um certificado embutido; nao e falha global.\n";
 }
+}
+
+std::string CliHelp() {
+	return FormatHelp();
 }
 
 std::string Utf8FromWide(std::wstring_view value) {
@@ -218,6 +232,10 @@ ParseResult ArgumentParser::parse(const std::vector<std::wstring>& args) {
 		else if (arg == L"--signature") parsed.options.include_signature = true;
 		else if (arg == L"--internal-name") parsed.options.include_internal_name = true;
 		else if (arg == L"--no-image-path") parsed.options.include_image_path = false;
+		else if (arg == L"--advanced") {
+			if (parsed.options.command != CliCommand::list) { parsed.error = "--advanced somente para list"; return parsed; }
+			parsed.options.output_mode = OutputMode::advanced;
+		}
 		else if (arg == L"--format") {
 			if (++index >= args.size()) { parsed.error = "valor ausente para --format"; return parsed; }
 			if (args[index] == L"tsv") parsed.options.format = CliFormat::tsv;
@@ -244,6 +262,47 @@ ParseResult ArgumentParser::parse(const std::vector<std::wstring>& args) {
 	}
 	parsed.ok = true;
 	return parsed;
+}
+
+namespace {
+const char* NormalStatus(bool value) { return value ? "true" : "false"; }
+
+const char* SignatureOutputStatus(const ProcessRecord& process) {
+	if (process.signature.state() != FieldState::available || !process.signature.value().has_value()) return "error";
+	switch (process.signature.value()->presence) {
+	case SignaturePresence::present: return "true";
+	case SignaturePresence::no_embedded_signature: return "false";
+	case SignaturePresence::unknown: return "error";
+	}
+	return "error";
+}
+
+const char* InternalNameOutputStatus(const ProcessRecord& process) {
+	if (process.internal_name.state() == FieldState::available && process.internal_name.value().has_value()) {
+		return NormalStatus(!process.internal_name.value()->empty());
+	}
+	if (process.internal_name.state() == FieldState::unavailable && !process.internal_name.error().has_value()) return "false";
+	return "error";
+}
+
+const char* ModulesOutputStatus(const ProcessRecord& process) {
+	if (process.modules.state() != FieldState::available || !process.modules.value().has_value() ||
+		process.modules.value()->state != ResultState::complete) return "error";
+	return NormalStatus(!process.modules.value()->items.empty());
+}
+}
+
+std::string NormalFormatter::format(const QueryResult& result, const CliOptions& options) {
+	std::ostringstream output;
+	for (const ProcessRecord& process : result.processes) {
+		output << process.pid << '\t'
+			<< (process.name.value().has_value() ? EscapeTsv(Utf8FromWide(*process.name.value())) : "-");
+		if (options.include_signature) output << '\t' << SignatureOutputStatus(process);
+		if (options.include_internal_name) output << '\t' << InternalNameOutputStatus(process);
+		if (options.include_modules) output << '\t' << ModulesOutputStatus(process);
+		output << '\n';
+	}
+	return output.str();
 }
 
 std::string TabularFormatter::format(const QueryResult& result, const CliOptions& options) {

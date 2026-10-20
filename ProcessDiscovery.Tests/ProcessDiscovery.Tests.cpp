@@ -2,6 +2,7 @@
 //
 
 #include "../ProcessDiscovery/ProcessCatalog.h"
+#include "../CliOutputUnitTests.h"
 
 #define NOMINMAX
 #include <Windows.h>
@@ -39,6 +40,10 @@ namespace {
 }
 
 int main() {
+	if (!RunCliOutputUnitTests()) {
+		std::cerr << "FAIL: CLI output unit tests.\\n";
+		return 1;
+	}
 	ProcessCatalog catalog;
 	const std::uint32_t currentPid = static_cast<std::uint32_t>(GetCurrentProcessId());
 	const std::wstring imagePath = GetCurrentImagePath();

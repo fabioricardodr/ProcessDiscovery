@@ -50,13 +50,15 @@ documentadas. Cada subcomando de consulta exige exatamente um argumento.
 | `--signature` | Ativa `InspectionOptions::include_signature`. A inspeção tenta verificar a assinatura Authenticode usando o caminho da imagem. Sem um caminho de imagem disponível, o campo de assinatura fica indisponível e o resultado pode ser parcial. A assinatura não é impressa na saída do CLI. |
 | `--internal-name` | Ativa `InspectionOptions::include_internal_name`. A inspeção tenta ler o nome interno do recurso de versão da imagem, quando o caminho da imagem está disponível. O valor não é impresso na saída do CLI. |
 | `--no-image-path` | Desativa `InspectionOptions::include_image_path`. Para consultas comuns, o caminho da imagem deixa de ser solicitado. Se `--signature` ou `--internal-name` também for usado, essas inspeções dependem do caminho e podem ficar indisponíveis, produzindo resultado parcial. Em `query-path`, o código força a inclusão do caminho para realizar o filtro; portanto, nessa consulta específica, `--no-image-path` não elimina o caminho necessário ao filtro. |
+| `--advanced` | Exclusiva de `list`. Preserva exatamente a saída detalhada legada. Não é enviada para `InspectionOptions` e não é aceita por `query-pid`, `query-name` ou `query-path`. |
 
 Por padrão, `include_image_path` é verdadeiro; `include_modules`, `include_signature` e `include_internal_name` são falsos. Não há flag do CLI para alterar `allow_remote_file_inspection`; a invocação usa o valor padrão dessa opção.
 
 ## 3. Formatos de saída
 
-O formato padrão é o TSV detalhado. A seleção explícita é feita com um valor
-separado:
+O formato padrão de `list` mudou para a saída normal compacta. Consumidores que
+dependem do formato anterior devem usar `list --advanced`. O modo avançado
+preserva a seleção de formato existente, feita com um valor separado:
 
 ```text
 --format tsv
@@ -67,7 +69,50 @@ separado:
 `--format=json`, valores ausentes e formatos desconhecidos são inválidos e
 retornam `1` sem consultar a DLL.
 
-### TSV detalhado
+### Saída normal de `list`
+
+Sem `--advanced`, cada processo é escrito sem cabeçalho como:
+
+```text
+<pid>\t<nome>[\t<status>...]\n
+```
+
+O nome é convertido para UTF-8; campos de texto têm tabulações, quebras de
+linha e barras invertidas escapadas como `\t`, `\n`, `\r` e `\\`. O nome
+indisponível é `-`. As colunas opcionais aparecem somente quando suas flags
+forem usadas, nesta ordem fixa:
+
+1. `--signature`;
+2. `--internal-name`;
+3. `--modules`.
+
+Os únicos valores de status são `true`, `false` e `error`:
+
+- `--signature`: `true` quando `SignaturePresence::present`, `false` quando
+  `no_embedded_signature`, e `error` quando desconhecida, indisponível ou não
+  analisada. O estado de confiança não altera esse resultado;
+- `--internal-name`: `true` para valor disponível e não vazio, `false` para
+  análise concluída sem valor, e `error` para acesso negado, processo encerrado,
+  caminho indisponível, `available_unverified` ou falha;
+- `--modules`: `true` para coleção disponível, concluída e não vazia, `false`
+  para coleção disponível, concluída e vazia, e `error` para coleção
+  indisponível, parcial, falha, `available_unverified` ou inconclusiva.
+
+`--no-image-path` continua sendo somente uma opção de coleta; não cria uma
+coluna de status.
+
+Exemplos:
+
+```powershell
+# PID e nome
+.\x64\Release\ProcessDiscovery.Cli.exe list
+# PID, nome e status de assinatura, nome interno e módulos, nessa ordem
+.\x64\Release\ProcessDiscovery.Cli.exe list --signature --internal-name --modules
+# Saída detalhada legada
+.\x64\Release\ProcessDiscovery.Cli.exe list --advanced --signature
+```
+
+### TSV detalhado (modo `--advanced`)
 
 O cabeçalho base é sempre:
 
@@ -104,7 +149,7 @@ o diagnóstico.
 
 ### Legacy
 
-`--format legacy` mantém exatamente duas colunas (`pid` e `name`), sem
+No modo `--advanced`, `--format legacy` mantém exatamente duas colunas (`pid` e `name`), sem
 cabeçalho e com terminador `\n`. Não inclui estados, diagnósticos ou colunas
 opcionais.
 
@@ -150,8 +195,10 @@ O caminho deve ser absoluto, UNC ou estendido.
 .\x64\Release\ProcessDiscovery.Cli.exe list --modules --signature --internal-name
 ```
 
-As flags adicionais alteram a inspeção e acrescentam as colunas correspondentes
-ao TSV ou propriedades correspondentes ao JSON.
+As flags adicionais alteram a inspeção e, em `list` sem `--advanced`,
+acrescentam as colunas de status correspondentes na saída normal. No modo
+`--advanced`, elas acrescentam as colunas correspondentes ao TSV ou propriedades
+correspondentes ao JSON.
 
 ### Invocação inválida e retorno ao help
 
@@ -174,8 +221,8 @@ parsing são reportados como `parse_error` e retornam `1`.
 
 ## 5. Diagnósticos e estados
 
-O TSV detalhado escreve uma linha por `ProcessRecord`, conforme as colunas
-selecionadas. O formato legacy é o único que escreve exatamente duas colunas:
+O modo normal e o TSV detalhado escrevem uma linha por `ProcessRecord`, conforme
+as colunas selecionadas. O formato legacy é o único que escreve exatamente duas colunas:
 
 ```text
 <pid>\t<nome>\n
@@ -187,7 +234,9 @@ selecionadas. O formato legacy é o único que escreve exatamente duas colunas:
 - nome indisponível: `<indisponível>`;
 - terminador de linha: `\n`.
 
-Quando a saída é um console, `WriteText` usa `WriteConsoleW`, portanto escreve diretamente a representação wide do texto. Quando a saída não é um console, converte o texto para UTF-8 com `WideCharToMultiByte` e envia os bytes por `std::cout`. O código não adiciona BOM.
+Quando a saída é um console, o caminho existente de escrita do projeto é usado.
+Quando a saída é redirecionada, o texto é convertido para UTF-8 sem BOM; o código
+não adiciona BOM.
 
 No TSV detalhado, estados e diagnósticos são serializados sem texto mágico.
 No JSON, valores ausentes são `null` e diagnósticos globais permanecem no

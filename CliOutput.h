@@ -10,11 +10,14 @@
 
 enum class CliFormat { tsv, json, legacy };
 
+enum class OutputMode { normal, advanced };
+
 enum class CliCommand { list, query_pid, query_name, query_path };
 
 struct CliOptions {
 	CliCommand command = CliCommand::list;
 	CliFormat format = CliFormat::tsv;
+	OutputMode output_mode = OutputMode::normal;
 	std::uint32_t pid = 0;
 	std::wstring argument;
 	bool has_argument = false;
@@ -52,6 +55,11 @@ public:
 	static std::string format(const QueryResult& result);
 };
 
+class NormalFormatter final {
+public:
+	static std::string format(const QueryResult& result, const CliOptions& options);
+};
+
 class OutputSink {
 public:
 	using Writer = std::function<bool(std::string_view)>;
@@ -73,3 +81,4 @@ public:
 };
 
 std::string Utf8FromWide(std::wstring_view value);
+std::string CliHelp();

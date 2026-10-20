@@ -8,6 +8,19 @@
 namespace {
 std::atomic_bool cancelled = false;
 
+std::string WriteCurrentOutput(const QueryResult& result, const CliOptions& options) {
+	switch (options.format) {
+	case CliFormat::tsv: return TabularFormatter::format(result, options);
+	case CliFormat::json: return JsonFormatter::format(result, options) + "\n";
+	case CliFormat::legacy: return LegacyFormatter::format(result);
+	}
+	return {};
+}
+
+std::string WriteNormal(const QueryResult& result, const CliOptions& options) {
+	return NormalFormatter::format(result, options);
+}
+
 BOOL WINAPI ConsoleHandler(DWORD type) {
 	if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT || type == CTRL_CLOSE_EVENT) {
 		cancelled.store(true, std::memory_order_relaxed);
@@ -30,7 +43,7 @@ int wmain(int argc, wchar_t** argv) {
 	}
 	if (parsed.help) {
 		OutputSink sink = MakeConsoleOutputSink();
-		sink.write_stdout("ProcessDiscovery\nUso: list|query-pid <pid>|query-name <nome>|query-path <caminho> [flags] [--format tsv|json|legacy]\n");
+		sink.write_stdout(CliHelp());
 		return 0;
 	}
 
@@ -61,17 +74,11 @@ int wmain(int argc, wchar_t** argv) {
 
 	std::string output;
 	try {
-		switch (parsed.options.format) {
-		case CliFormat::tsv:
-			output = TabularFormatter::format(result, parsed.options);
-			break;
-		case CliFormat::json:
-			output = JsonFormatter::format(result, parsed.options);
-			output.push_back('\n');
-			break;
-		case CliFormat::legacy:
-			output = LegacyFormatter::format(result);
-			break;
+		if (parsed.options.command == CliCommand::list && parsed.options.output_mode == OutputMode::normal) {
+			output = WriteNormal(result, parsed.options);
+		}
+		else {
+			output = WriteCurrentOutput(result, parsed.options);
 		}
 	}
 	catch (const std::exception& error) {
@@ -82,8 +89,9 @@ int wmain(int argc, wchar_t** argv) {
 
 	OutputSink sink = MakeConsoleOutputSink();
 	bool output_ok = sink.write_stdout(output);
-	if (parsed.options.format == CliFormat::tsv ||
-		(parsed.options.format == CliFormat::legacy && (!result.diagnostics.empty() || result.fatal_error.has_value()))) {
+	if (!(parsed.options.command == CliCommand::list && parsed.options.output_mode == OutputMode::normal) &&
+		(parsed.options.format == CliFormat::tsv ||
+		 (parsed.options.format == CliFormat::legacy && (!result.diagnostics.empty() || result.fatal_error.has_value())))) {
 		output_ok = sink.write_stderr(TabularFormatter::summary(result)) && output_ok;
 	}
 	if (!output_ok) sink.write_stderr("output_error=failed to write stdout or stderr\n");
