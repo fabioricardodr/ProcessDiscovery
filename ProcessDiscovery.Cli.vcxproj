@@ -59,6 +59,7 @@
       <RuntimeLibrary Condition="'$(Configuration)' == 'Debug'">MultiThreadedDebugDLL</RuntimeLibrary>
       <RuntimeLibrary Condition="'$(Configuration)' != 'Debug'">MultiThreadedDLL</RuntimeLibrary>
       <PreprocessorDefinitions>UNICODE;_UNICODE;WINVER=0x0A00;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>.;third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -67,6 +68,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="ProcessDiscovery.Cli.cpp" />
+    <ClCompile Include="CliOutput.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="ProcessDiscovery\ProcessDiscovery.vcxproj">

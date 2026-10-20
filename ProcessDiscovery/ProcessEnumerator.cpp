@@ -349,6 +349,18 @@ QueryResult QueryProcessByPid(std::uint32_t pid, const InspectionOptions& option
 		return process.pid != pid;
 		});
 
+	if (res.state == ResultState::failed && !res.fatal_error.has_value()) {
+		const ErrorInfo internal{
+			"QueryProcess", 0,
+			"A consulta falhou sem fornecer um diagnóstico fatal.",
+			ErrorDomain::internal
+		};
+		res.fatal_error = internal;
+		res.diagnostics.push_back(internal);
+	}
+	if (res.state != ResultState::failed) {
+		res.fatal_error.reset();
+	}
 	return res;
 }
 
@@ -377,6 +389,7 @@ QueryResult QueryProcessByName(std::wstring name, const InspectionOptions& optio
 			TRUE) != CSTR_EQUAL;
 		});
 
+	res.fatal_error.reset();
 	return res;
 }
 
@@ -422,6 +435,7 @@ QueryResult QueryProcessByFullPath(std::wstring full_path, const InspectionOptio
 			TRUE) != CSTR_EQUAL;
 		});
 
+	res.fatal_error.reset();
 	return res;
 }
 
@@ -480,10 +494,15 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 		process.signature = std::move(details.signature);
 		process.observation_consistency = details.observation_consistency;
 
+		auto add_process_diagnostic = [&process, &res](const ErrorInfo& error) {
+			process.diagnostics.push_back(error);
+			res.diagnostics.push_back(error);
+		};
+
 		// Se um campo tiver uma mensagem de erro, adiciona essa mensagem ao resultado geral.
-		auto add_field_diagnostic = [&res](const auto& field) {
+		auto add_field_diagnostic = [&add_process_diagnostic](const auto& field) {
 			if (field.error().has_value()) {
-				res.diagnostics.push_back(*field.error());
+				add_process_diagnostic(*field.error());
 			}
 		};
 
@@ -508,10 +527,12 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 				res.state = ResultState::partial;
 				add_field_diagnostic(process.modules);
 			}
-			else if (process.modules.value()->state != ResultState::complete) {
-				res.state = ResultState::partial;
+			if (process.modules.value().has_value()) {
+				if (process.modules.value()->state != ResultState::complete) {
+					res.state = ResultState::partial;
+				}
 				for (const ErrorInfo& error : process.modules.value()->diagnostics) {
-					res.diagnostics.push_back(error);
+					add_process_diagnostic(error);
 				}
 			}
 		}
@@ -539,7 +560,8 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 			Field<std::uint64_t>::not_requested(),
 			Field<std::wstring>::not_requested(),
 			Field<CollectionResult<ModuleRecord>>::not_requested(),
-			Field<SignatureStatus>::not_requested()
+			Field<SignatureStatus>::not_requested(),
+			{}
 		});
 
 		// Na enumeração geral, analisamos todos os processos.
@@ -581,6 +603,9 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 							ErrorDomain::validation
 						};
 						process.parent_name = Field<std::wstring>::failure(mismatch);
+						process.diagnostics.push_back(mismatch);
+						res.diagnostics.push_back(mismatch);
+						res.state = ResultState::partial;
 						process.observation_consistency = ObservationConsistency::mismatch_detected;
 						continue;
 					}
@@ -596,6 +621,9 @@ QueryResult QueryProcessFiltered(const InspectionOptions& options, std::optional
 				};
 				process.parent_name = Field<std::wstring>::available_unverified(
 					L"<pai não observado>", diagnostic);
+				process.diagnostics.push_back(diagnostic);
+				res.diagnostics.push_back(diagnostic);
+				res.state = ResultState::partial;
 			}
 		}
 		else {

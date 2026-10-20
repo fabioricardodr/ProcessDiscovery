@@ -32,6 +32,7 @@ Field<SignatureStatus> AuthenticodeVerifier::verify(const std::wstring& image_pa
 	trust_data.dwProvFlags = WTD_CACHE_ONLY_URL_RETRIEVAL;
 
 	const GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+	GetWin32Api().ClearLastError();
 	const LONG verify_status = GetWin32Api().WinVerifyTrust(nullptr, const_cast<GUID*>(&action), &trust_data);
 	status.wintrust_status = verify_status;
 	status.last_error = GetWin32Api().GetLastErrorValue();

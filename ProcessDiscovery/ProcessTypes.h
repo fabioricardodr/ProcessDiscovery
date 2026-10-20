@@ -130,6 +130,7 @@ struct ProcessRecord {
     Field<CollectionResult<ModuleRecord>> modules;
     Field<SignatureStatus> signature;
     ObservationConsistency observation_consistency = ObservationConsistency::snapshot_only;
+    std::vector<ErrorInfo> diagnostics;
 };
 
 struct QueryResult {
