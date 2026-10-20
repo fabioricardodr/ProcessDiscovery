@@ -7,12 +7,14 @@
 #include <winver.h>
 #include <algorithm>
 #include <string>
+#include <vector>
 
 class IWin32Api {
 public:
 	virtual ~IWin32Api() = default;
 
 	virtual DWORD GetLastErrorValue() const noexcept = 0;
+	virtual void ClearLastError() noexcept = 0;
 	virtual HANDLE CreateToolhelp32Snapshot(DWORD flags, DWORD process_id) noexcept = 0;
 	virtual BOOL Process32FirstW(HANDLE snapshot, PROCESSENTRY32W* entry) noexcept = 0;
 	virtual BOOL Process32NextW(HANDLE snapshot, PROCESSENTRY32W* entry) noexcept = 0;
@@ -37,6 +39,7 @@ void SetWin32ApiForTesting(IWin32Api* api) noexcept;
 class NativeWin32Api final : public IWin32Api {
 public:
 	DWORD GetLastErrorValue() const noexcept override;
+	void ClearLastError() noexcept override;
 	HANDLE CreateToolhelp32Snapshot(DWORD flags, DWORD process_id) noexcept override;
 	BOOL Process32FirstW(HANDLE snapshot, PROCESSENTRY32W* entry) noexcept override;
 	BOOL Process32NextW(HANDLE snapshot, PROCESSENTRY32W* entry) noexcept override;
@@ -58,6 +61,7 @@ public:
 class FakeWin32Api final : public IWin32Api {
 public:
 	DWORD last_error = ERROR_SUCCESS;
+	mutable std::vector<std::string> call_order;
 	HANDLE snapshot_result = INVALID_HANDLE_VALUE;
 	HANDLE process_result = nullptr;
 	BOOL close_result = TRUE;
@@ -87,7 +91,8 @@ public:
 	DWORD first_state_action = 0;
 	DWORD last_state_action = 0;
 
-	DWORD GetLastErrorValue() const noexcept override { return last_error; }
+	DWORD GetLastErrorValue() const noexcept override { call_order.push_back("get_last_error"); return last_error; }
+	void ClearLastError() noexcept override { last_error = ERROR_SUCCESS; call_order.push_back("clear_last_error"); }
 	HANDLE CreateToolhelp32Snapshot(DWORD, DWORD) noexcept override { return snapshot_result; }
 	BOOL Process32FirstW(HANDLE, PROCESSENTRY32W* entry) noexcept override {
 		if (snapshot_first_result && entry != nullptr) *entry = process_entry;
@@ -140,6 +145,7 @@ public:
 	BOOL GetFileVersionInfoW(LPCWSTR, DWORD, DWORD, LPVOID) noexcept override { return FALSE; }
 	BOOL VerQueryValueW(const LPVOID, LPCWSTR, LPVOID*, PUINT) noexcept override { return FALSE; }
 	LONG WinVerifyTrust(HWND, GUID*, WINTRUST_DATA* data) noexcept override {
+		call_order.push_back("WinVerifyTrust");
 		if (wintrust_calls == 0 && data != nullptr) {
 			first_ui_choice = data->dwUIChoice;
 			first_revocation_checks = data->fdwRevocationChecks;

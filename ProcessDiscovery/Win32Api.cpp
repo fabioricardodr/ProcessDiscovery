@@ -15,6 +15,7 @@ void SetWin32ApiForTesting(IWin32Api* api) noexcept {
 }
 
 DWORD NativeWin32Api::GetLastErrorValue() const noexcept { return ::GetLastError(); }
+void NativeWin32Api::ClearLastError() noexcept { ::SetLastError(ERROR_SUCCESS); }
 HANDLE NativeWin32Api::CreateToolhelp32Snapshot(DWORD flags, DWORD process_id) noexcept { return ::CreateToolhelp32Snapshot(flags, process_id); }
 BOOL NativeWin32Api::Process32FirstW(HANDLE snapshot, PROCESSENTRY32W* entry) noexcept { return ::Process32FirstW(snapshot, entry); }
 BOOL NativeWin32Api::Process32NextW(HANDLE snapshot, PROCESSENTRY32W* entry) noexcept { return ::Process32NextW(snapshot, entry); }

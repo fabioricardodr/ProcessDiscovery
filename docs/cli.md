@@ -39,7 +39,8 @@ Os subcomandos são:
 
 Os argumentos que contêm espaços devem ser protegidos pelo mecanismo de quoting do shell. Argumentos adicionais, depois do argumento do subcomando, precisam ser flags reconhecidas.
 
-**Limitação da implementação atual:** o laço que processa flags começa em `argv[2]`, antes do despacho do subcomando. Por isso, o argumento obrigatório de `query-pid`, `query-name` ou `query-path` também é interpretado como flag. Um PID, nome ou caminho normal é uma flag desconhecida e faz a execução retornar `1`; a consulta não é executada. A forma acima é a sintaxe anunciada pelo `--help`, mas não é atualmente executável para esses três subcomandos. Essa divergência é uma questão em aberto do código, não uma garantia de uso.
+O parser separa o argumento posicional das flags e aceita as duas ordens
+documentadas. Cada subcomando de consulta exige exatamente um argumento.
 
 ### Flags
 
@@ -49,12 +50,113 @@ Os argumentos que contêm espaços devem ser protegidos pelo mecanismo de quotin
 | `--signature` | Ativa `InspectionOptions::include_signature`. A inspeção tenta verificar a assinatura Authenticode usando o caminho da imagem. Sem um caminho de imagem disponível, o campo de assinatura fica indisponível e o resultado pode ser parcial. A assinatura não é impressa na saída do CLI. |
 | `--internal-name` | Ativa `InspectionOptions::include_internal_name`. A inspeção tenta ler o nome interno do recurso de versão da imagem, quando o caminho da imagem está disponível. O valor não é impresso na saída do CLI. |
 | `--no-image-path` | Desativa `InspectionOptions::include_image_path`. Para consultas comuns, o caminho da imagem deixa de ser solicitado. Se `--signature` ou `--internal-name` também for usado, essas inspeções dependem do caminho e podem ficar indisponíveis, produzindo resultado parcial. Em `query-path`, o código força a inclusão do caminho para realizar o filtro; portanto, nessa consulta específica, `--no-image-path` não elimina o caminho necessário ao filtro. |
+| `--advanced` | Exclusiva de `list`. Preserva exatamente a saída detalhada legada. Não é enviada para `InspectionOptions` e não é aceita por `query-pid`, `query-name` ou `query-path`. |
 
 Por padrão, `include_image_path` é verdadeiro; `include_modules`, `include_signature` e `include_internal_name` são falsos. Não há flag do CLI para alterar `allow_remote_file_inspection`; a invocação usa o valor padrão dessa opção.
 
-## 3. Exemplos de uso
+## 3. Formatos de saída
 
-Os exemplos abaixo mostram a forma anunciada pelo CLI. `list` e as flags podem ser executados; os três exemplos de consulta com argumento demonstram a limitação descrita na sintaxe e retornam `1` no binário atual. Consulte [Códigos de retorno](#5-códigos-de-retorno).
+O formato padrão de `list` mudou para a saída normal compacta. Consumidores que
+dependem do formato anterior devem usar `list --advanced`. O modo avançado
+preserva a seleção de formato existente, feita com um valor separado:
+
+```text
+--format tsv
+--format json
+--format legacy
+```
+
+`--format=json`, valores ausentes e formatos desconhecidos são inválidos e
+retornam `1` sem consultar a DLL.
+
+### Saída normal de `list`
+
+Sem `--advanced`, cada processo é escrito sem cabeçalho como:
+
+```text
+<pid>\t<nome>[\t<status>...]\n
+```
+
+O nome é convertido para UTF-8; campos de texto têm tabulações, quebras de
+linha e barras invertidas escapadas como `\t`, `\n`, `\r` e `\\`. O nome
+indisponível é `-`. As colunas opcionais aparecem somente quando suas flags
+forem usadas, nesta ordem fixa:
+
+1. `--signature`;
+2. `--internal-name`;
+3. `--modules`.
+
+Os únicos valores de status são `true`, `false` e `error`:
+
+- `--signature`: `true` quando `SignaturePresence::present`, `false` quando
+  `no_embedded_signature`, e `error` quando desconhecida, indisponível ou não
+  analisada. O estado de confiança não altera esse resultado;
+- `--internal-name`: `true` para valor disponível e não vazio, `false` para
+  análise concluída sem valor, e `error` para acesso negado, processo encerrado,
+  caminho indisponível, `available_unverified` ou falha;
+- `--modules`: `true` para coleção disponível, concluída e não vazia, `false`
+  para coleção disponível, concluída e vazia, e `error` para coleção
+  indisponível, parcial, falha, `available_unverified` ou inconclusiva.
+
+`--no-image-path` continua sendo somente uma opção de coleta; não cria uma
+coluna de status.
+
+Exemplos:
+
+```powershell
+# PID e nome
+.\x64\Release\ProcessDiscovery.Cli.exe list
+# PID, nome e status de assinatura, nome interno e módulos, nessa ordem
+.\x64\Release\ProcessDiscovery.Cli.exe list --signature --internal-name --modules
+# Saída detalhada legada
+.\x64\Release\ProcessDiscovery.Cli.exe list --advanced --signature
+```
+
+### TSV detalhado (modo `--advanced`)
+
+O cabeçalho base é sempre:
+
+```text
+pid name name_state image_path image_path_state
+```
+
+As colunas opcionais são anexadas nesta ordem:
+
+```text
+internal_name internal_name_state internal_name_diagnostic
+signature_presence signature_trust signature_wintrust_status signature_last_error signature_policy signature_state signature_diagnostic
+modules_count modules_state modules_result_state modules_diagnostics
+```
+
+As colunas de módulos só aparecem com `--modules`. Estados usam os nomes
+canônicos de `FieldState`; valores ausentes são `-`. Diagnósticos são objetos
+JSON compactos e `modules_diagnostics` é uma lista JSON compacta. O resumo
+global é escrito em UTF-8 no `stderr`, nunca misturado ao TSV de `stdout`.
+
+### JSON
+
+O JSON usa `schema_version=1` e o contrato em
+`docs/contracts/cli-output.schema.json`. Valores ausentes são `null`. As
+propriedades de módulos permanecem estáveis: sem `--modules`,
+`modules=null`, `modules_count=null`, `modules_state=not_requested`,
+`modules_result_state=null` e `modules_diagnostics=[]`. Com a flag, a coleção,
+os estados e os diagnósticos são preservados na ordem observada.
+
+Assinaturas preservam `presence`, `trust`, o `LONG` bruto de
+`WinVerifyTrust`, `last_error` (inclusive `0`), a política
+`WTD_UI_NONE;WTD_REVOKE_NONE;WTD_CACHE_ONLY_URL_RETRIEVAL`, o estado do campo e
+o diagnóstico.
+
+### Legacy
+
+No modo `--advanced`, `--format legacy` mantém exatamente duas colunas (`pid` e `name`), sem
+cabeçalho e com terminador `\n`. Não inclui estados, diagnósticos ou colunas
+opcionais.
+
+## 4. Exemplos de uso
+
+Os exemplos abaixo mostram a forma suportada pelo CLI. Argumentos posicionais
+podem aparecer antes ou depois das flags.
 
 ### `list`
 
@@ -68,7 +170,8 @@ Os exemplos abaixo mostram a forma anunciada pelo CLI. `list` e as flags podem s
 .\x64\Release\ProcessDiscovery.Cli.exe query-pid 1234
 ```
 
-No binário atual, `1234` é processado como flag desconhecida e o retorno é `1`.
+O retorno depende do resultado da consulta; PID inválido retorna `1` sem
+consultar a DLL.
 
 ### `query-name <nome>`
 
@@ -76,7 +179,7 @@ No binário atual, `1234` é processado como flag desconhecida e o retorno é `1
 .\x64\Release\ProcessDiscovery.Cli.exe query-name notepad.exe
 ```
 
-No binário atual, `notepad.exe` é processado como flag desconhecida e o retorno é `1`.
+O nome é comparado pela DLL sem distinção entre maiúsculas e minúsculas.
 
 ### `query-path <caminho>`
 
@@ -84,7 +187,7 @@ No binário atual, `notepad.exe` é processado como flag desconhecida e o retorn
 .\x64\Release\ProcessDiscovery.Cli.exe query-path "C:\Windows\System32\notepad.exe"
 ```
 
-No binário atual, o caminho é processado como flag desconhecida e o retorno é `1`.
+O caminho deve ser absoluto, UNC ou estendido.
 
 ### Múltiplas flags
 
@@ -92,7 +195,10 @@ No binário atual, o caminho é processado como flag desconhecida e o retorno é
 .\x64\Release\ProcessDiscovery.Cli.exe list --modules --signature --internal-name
 ```
 
-As flags adicionais alteram a inspeção, mas não acrescentam colunas à saída textual atual.
+As flags adicionais alteram a inspeção e, em `list` sem `--advanced`,
+acrescentam as colunas de status correspondentes na saída normal. No modo
+`--advanced`, elas acrescentam as colunas correspondentes ao TSV ou propriedades
+correspondentes ao JSON.
 
 ### Invocação inválida e retorno ao help
 
@@ -110,11 +216,13 @@ Um subcomando desconhecido faz o CLI imprimir a mesma mensagem de ajuda e retorn
 .\x64\Release\ProcessDiscovery.Cli.exe --help
 ```
 
-A mensagem de ajuda também é exibida para ausência de subcomando, argumentos obrigatórios ausentes e flags desconhecidas. PID inválido retorna `1`, mas o caminho de PID inválido não chama `Help()` antes de retornar.
+A mensagem de ajuda é exibida somente quando `--help` é solicitado; erros de
+parsing são reportados como `parse_error` e retornam `1`.
 
-## 4. Formato de saída
+## 5. Diagnósticos e estados
 
-Para cada `ProcessRecord` retornado, o laço de impressão escreve uma linha com exatamente duas colunas:
+O modo normal e o TSV detalhado escrevem uma linha por `ProcessRecord`, conforme
+as colunas selecionadas. O formato legacy é o único que escreve exatamente duas colunas:
 
 ```text
 <pid>\t<nome>\n
@@ -126,21 +234,26 @@ Para cada `ProcessRecord` retornado, o laço de impressão escreve uma linha com
 - nome indisponível: `<indisponível>`;
 - terminador de linha: `\n`.
 
-Quando a saída é um console, `WriteText` usa `WriteConsoleW`, portanto escreve diretamente a representação wide do texto. Quando a saída não é um console, converte o texto para UTF-8 com `WideCharToMultiByte` e envia os bytes por `std::cout`. O código não adiciona BOM.
+Quando a saída é um console, o caminho existente de escrita do projeto é usado.
+Quando a saída é redirecionada, o texto é convertido para UTF-8 sem BOM; o código
+não adiciona BOM.
 
-Os campos de caminho da imagem, nome interno, módulos e assinatura não são serializados na saída do CLI, mesmo quando suas flags são usadas. Não existe flag de formato alternativo, como JSON, CSV ou XML. **Formato alternativo de saída: não suportado atualmente.**
+No TSV detalhado, estados e diagnósticos são serializados sem texto mágico.
+No JSON, valores ausentes são `null` e diagnósticos globais permanecem no
+envelope da consulta.
 
-## 5. Códigos de retorno
+## 6. Códigos de retorno
 
 A função `ResultCode` aplica as condições na ordem abaixo:
 
 | Código | Condição exata |
 |---:|---|
-| `0` | O `QueryResult` não está em `failed`, não está em `partial`, não houve cancelamento e há pelo menos um processo retornado. |
-| `1` | Invocação inválida: nenhum subcomando, subcomando desconhecido, argumento obrigatório ausente, flag desconhecida ou PID que não pôde ser convertido para `uint32_t`. Inclui os argumentos normais de `query-pid`, `query-name` e `query-path`, pois o parser atual os lê como flags desconhecidas antes do despacho. Este código é retornado antes da consulta nesses casos. |
+| `0` | Resultado completo com pelo menos um processo. |
+| `1` | Parsing inválido, incluindo subcomando, argumento, flag ou formato inválido. Retornado antes da consulta. |
 | `2` | O `QueryResult` está em `ResultState::failed`. Essa condição tem precedência sobre parcial/cancelamento no cálculo do código. |
 | `3` | O `QueryResult` está completo, não houve cancelamento e `processes` está vazio. |
 | `4` | O `QueryResult` está em `ResultState::partial` ou o handler de console registrou cancelamento. Essa condição é avaliada depois de `failed` e antes do caso de resultado vazio. |
+| `5` | Falha de serialização ou escrita em `stdout`/`stderr`. Tem precedência sobre o estado da consulta. |
 
 A solicitação explícita de `--help` retorna `0`; a ausência de argumentos imprime a ajuda, mas retorna `1`.
 
@@ -159,13 +272,14 @@ Avisos: PPL, permissões, cross-bitness, volumes remotos, corridas de processo e
 no_embedded_signature significa que não foi encontrado um certificado embutido; não é falha global.
 ```
 
-Esses avisos refletem limitações do ambiente e da inspeção. Em particular, `no_embedded_signature` é um estado de presença da assinatura, não uma falha global da consulta. A saída do CLI não imprime os diagnósticos que explicam o resultado parcial; para observá-los como dados estruturados é necessário consumir a API da biblioteca.
-
-Há também a limitação de parsing descrita na [sintaxe formal](#2-sintaxe-formal): embora o help anuncie os três subcomandos de consulta com seus argumentos, a implementação atual não aceita argumentos normais nesses comandos.
+Esses avisos refletem limitações do ambiente e da inspeção. Em particular,
+`no_embedded_signature` é um estado de presença da assinatura, não uma falha
+global da consulta. O TSV imprime o resumo global no `stderr` e o JSON mantém
+os diagnósticos no envelope.
 
 ## 8. Diagnóstico de resultados parciais
 
-`QueryResult::state` pode ser `complete`, `partial` ou `failed`. `ResultState::partial` significa que a consulta retornou dados, mas alguma parte da enumeração ou inspeção não pôde ser confirmada ou concluída. No CLI, esse estado é exposto principalmente pelo código de saída `4`; os diagnósticos e os estados individuais não são impressos.
+`QueryResult::state` pode ser `complete`, `partial` ou `failed`. `ResultState::partial` significa que a consulta retornou dados, mas alguma parte da enumeração ou inspeção não pôde ser confirmada ou concluída. No CLI, esse estado é exposto pelo código de saída `4`, pelo resumo TSV em `stderr` e pelos estados/diagnósticos dos processos.
 
 Cada campo `Field<T>` de um `ProcessRecord` possui um `FieldState`:
 

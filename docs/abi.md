@@ -47,3 +47,17 @@ Consumidores devem ser compilados com o mesmo toolset MSVC, arquitetura, configu
 - `ProcessDiscovery.Tests/ProcessDiscovery.Tests.cpp` cobre estados de campos, consultas por PID/nome/caminho, VERSIONINFO, Authenticode, módulos, identidade, arquitetura e cancelamento determinístico por fake Win32.
 - `ProcessDiscovery.Cli.exe --help` retorna código `0`; argumento inválido retorna `1`; consulta sem correspondências retorna `3`; resultado parcial retorna `4`.
 - `ProcessDiscovery.LoaderTest.exe` valida carregamento, resolução de exportação decorada da classe C++ e liberação da DLL.
+
+## Extensão desta entrega
+
+`ProcessRecord` agora contém `std::vector<ErrorInfo> diagnostics`, preservando
+diagnósticos associados ao processo além dos diagnósticos globais de
+`QueryResult`. Essa alteração modifica o layout de um tipo C++ público
+retornado por valor.
+
+Consequentemente, `ProcessDiscovery.dll`, `ProcessDiscovery.Cli.exe`,
+`ProcessDiscovery.Tests.exe`, `ProcessDiscovery.LoaderTest.exe` e qualquer
+outro consumidor devem ser recompilados juntos, usando a mesma configuração,
+arquitetura, toolset, CRT e versão dos headers. Não existe compatibilidade
+binária entre uma DLL antiga e consumidores compilados após essa extensão.
+Não foi introduzida uma ABI C nesta entrega.
