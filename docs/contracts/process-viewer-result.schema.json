@@ -1,0 +1,1191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://processdiscovery.local/contracts/process-viewer-result.schema.json",
+  "title": "Process Viewer Bridge Result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "processes",
+    "state",
+    "fatal_error",
+    "diagnostics",
+    "partial_reasons",
+    "unevaluable_processes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "processes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/process"
+      }
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "failed"
+      ]
+    },
+    "fatal_error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/fatalError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/error"
+      }
+    },
+    "partial_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "target_inspection",
+          "auxiliary_enumeration",
+          "cancellation"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "unevaluable_processes": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+            "required": [
+              "state"
+            ],
+        "properties": {
+          "state": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "fatal_error": {
+            "const": null
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "complete",
+              "failed"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "partial_reasons": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "partial"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "fatal_error": {
+            "const": null
+          },
+          "partial_reasons": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "failed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "fatal_error": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "resultState": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "partial",
+        "failed"
+      ]
+    },
+    "fieldState": {
+      "type": "string",
+      "enum": [
+        "available",
+        "unavailable",
+        "not_requested",
+        "access_denied",
+        "process_exited",
+        "unsupported_architecture",
+        "available_unverified",
+        "error"
+      ]
+    },
+    "errorDomain": {
+      "type": "string",
+      "enum": [
+        "none",
+        "win32",
+        "wintrust",
+        "version_resource",
+        "validation",
+        "cancellation",
+        "internal",
+        "bridge"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "diagnostic_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "diagnostic_kind": {
+          "type": "string",
+          "enum": [
+            "parent_not_observed",
+            "enumeration_incomplete",
+            "target_inspection",
+            "cancellation",
+            "fatal",
+            "other"
+          ]
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "query_result",
+            "process_record",
+            "field",
+            "collection",
+            "fatal_error",
+            "bridge"
+          ]
+        },
+        "operation": {
+          "type": "string"
+        },
+        "native_code": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "message": {
+          "type": "string"
+        },
+        "domain": {
+          "$ref": "#/$defs/errorDomain"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "global",
+            "process",
+            "field",
+            "collection"
+          ]
+        },
+        "process_pid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "collection": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "diagnostic_id",
+        "diagnostic_kind",
+        "origin",
+        "operation",
+        "native_code",
+        "message",
+        "domain",
+        "scope"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "const": "error"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "diagnostic"
+            ],
+            "properties": {
+              "diagnostic": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "fatal_error"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "scope"
+            ],
+            "properties": {
+              "diagnostic_kind": {
+                "const": "fatal"
+              },
+              "origin": {
+                "const": "fatal_error"
+              },
+              "scope": {
+                "const": "global"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "query_result"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "const": "global"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "process_record"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "const": "process"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "field"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "const": "field"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "collection"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "const": "collection"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "origin": {
+                "const": "bridge"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "scope": {
+                "const": "global"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "global"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "process_pid"
+                  ]
+                },
+                {
+                  "required": [
+                    "field"
+                  ]
+                },
+                {
+                  "required": [
+                    "collection"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "process"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "process_pid"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "field"
+                  ]
+                },
+                {
+                  "required": [
+                    "collection"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "field"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "process_pid",
+              "field"
+            ],
+            "not": {
+              "required": [
+                "collection"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "scope": {
+                "const": "collection"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "process_pid",
+              "collection"
+            ],
+            "not": {
+              "required": [
+                "field"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "fatalError": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "properties": {
+            "scope": {
+              "const": "global"
+            },
+            "diagnostic_kind": {
+              "const": "fatal"
+            },
+            "origin": {
+              "const": "fatal_error"
+            }
+          },
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "process_pid"
+                ]
+              },
+              {
+                "required": [
+                  "field"
+                ]
+              },
+              {
+                "required": [
+                  "collection"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "fieldString": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "value",
+        "diagnostic"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/fieldState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "error"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "diagnostic"
+            ],
+            "properties": {
+              "diagnostic": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "not_requested"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "available",
+                  "available_unverified"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "unavailable",
+                  "access_denied",
+                  "process_exited",
+                  "unsupported_architecture",
+                  "error"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "const": null
+              }
+            }
+          }
+        }
+      ]
+    },
+    "fieldU32": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "value",
+        "diagnostic"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/fieldState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "error"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "diagnostic"
+            ],
+            "properties": {
+              "diagnostic": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "available",
+                  "available_unverified"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_requested",
+                  "unavailable",
+                  "access_denied",
+                  "process_exited",
+                  "unsupported_architecture",
+                  "error"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "const": null
+              }
+            }
+          }
+        }
+      ]
+    },
+    "fieldU64": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "value",
+        "diagnostic"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/fieldState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "error"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "diagnostic"
+            ],
+            "properties": {
+              "diagnostic": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "available",
+                  "available_unverified"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_requested",
+                  "unavailable",
+                  "access_denied",
+                  "process_exited",
+                  "unsupported_architecture",
+                  "error"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "const": null
+              }
+            }
+          }
+        }
+      ]
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "path",
+        "base_address"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/fieldString"
+        },
+        "path": {
+          "$ref": "#/$defs/fieldString"
+        },
+        "base_address": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "moduleCollection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items",
+        "state",
+        "diagnostics"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/module"
+          }
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/error"
+          }
+        }
+      }
+    },
+    "fieldModules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "value",
+        "diagnostic"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/fieldState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/moduleCollection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "error"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "diagnostic"
+            ],
+            "properties": {
+              "diagnostic": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "available",
+                  "available_unverified"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_requested",
+                  "unavailable",
+                  "access_denied",
+                  "process_exited",
+                  "unsupported_architecture",
+                  "error"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "const": null
+              }
+            }
+          }
+        }
+      ]
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "presence",
+        "trust",
+        "wintrust_status",
+        "last_error",
+        "policy"
+      ],
+      "properties": {
+        "presence": {
+          "type": "string",
+          "enum": [
+            "present",
+            "no_embedded_signature",
+            "unknown"
+          ]
+        },
+        "trust": {
+          "type": "string",
+          "enum": [
+            "valid",
+            "invalid",
+            "indeterminate",
+            "not_evaluated"
+          ]
+        },
+        "wintrust_status": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "last_error": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy": {
+          "type": "string"
+        }
+      }
+    },
+    "fieldSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "value",
+        "diagnostic"
+      ],
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/fieldState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/signature"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostic": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/error"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "error"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "diagnostic"
+            ],
+            "properties": {
+              "diagnostic": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "available",
+                  "available_unverified"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_requested",
+                  "unavailable",
+                  "access_denied",
+                  "process_exited",
+                  "unsupported_architecture",
+                  "error"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "const": null
+              }
+            }
+          }
+        }
+      ]
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "ppid",
+        "name",
+        "image_path",
+        "parent_name",
+        "creation_time_100ns",
+        "internal_name",
+        "modules",
+        "signature",
+        "observation_consistency",
+        "diagnostics"
+      ],
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "ppid": {
+          "$ref": "#/$defs/fieldU32"
+        },
+        "name": {
+          "$ref": "#/$defs/fieldString"
+        },
+        "image_path": {
+          "$ref": "#/$defs/fieldString"
+        },
+        "parent_name": {
+          "$ref": "#/$defs/fieldString"
+        },
+        "creation_time_100ns": {
+          "$ref": "#/$defs/fieldU64"
+        },
+        "internal_name": {
+          "$ref": "#/$defs/fieldString"
+        },
+        "modules": {
+          "$ref": "#/$defs/fieldModules"
+        },
+        "signature": {
+          "$ref": "#/$defs/fieldSignature"
+        },
+        "observation_consistency": {
+          "type": "string",
+          "enum": [
+            "snapshot_only",
+            "handle_only",
+            "best_effort_unverified",
+            "mismatch_detected"
+          ]
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/error"
+          }
+        }
+      }
+    }
+  }
+}

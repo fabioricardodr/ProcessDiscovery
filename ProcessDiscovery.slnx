@@ -7,4 +7,15 @@
   <Project Path="ProcessDiscovery/ProcessDiscovery.vcxproj" Id="c5ea320a-d5eb-4beb-8c5c-3149c50dbd9e" />
   <Project Path="ProcessDiscovery.Cli.vcxproj" Id="d6b01b25-4d0f-4d5b-9a4e-4c76a0a5f001" />
   <Project Path="ProcessDiscovery.LoaderTest.vcxproj" Id="7d1e86c1-6bb9-4bd1-a2bb-3c4d7f159e31" />
+  <Folder Name="/src/">
+    <Project Path="src/ProcessDiscovery.App/ProcessDiscovery.App.csproj">
+      <Platform Solution="*|Win32" Project="x86" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+    <Project Path="src/ProcessDiscovery.Application/ProcessDiscovery.Application.csproj">
+      <Platform Solution="*|Win32" Project="x86" />
+      <Platform Solution="*|x64" Project="x64" />
+    </Project>
+  </Folder>
+  <Project Path="ProcessDiscovery.Bridge/ProcessDiscovery.Bridge.vcxproj" Id="e8ca4b8e-08ee-4f95-b88d-8ed4b0dca5a1" />
 </Solution>

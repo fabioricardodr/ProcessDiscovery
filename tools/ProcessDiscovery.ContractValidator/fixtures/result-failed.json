@@ -1,0 +1,1 @@
+{"schema_version":3,"processes":[],"state":"failed","fatal_error":{"diagnostic_id":"d1","diagnostic_kind":"fatal","origin":"fatal_error","operation":"query","native_code":5,"message":"failed","domain":"internal","scope":"global"},"diagnostics":[],"partial_reasons":[],"unevaluable_processes":0}

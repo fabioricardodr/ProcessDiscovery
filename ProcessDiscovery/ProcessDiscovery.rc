@@ -1,0 +1,32 @@
+#include <winver.h>
+
+#define PD_FILE_VERSION 1,0,0,0
+#define PD_FILE_VERSION_TEXT "1.0.0.0\0"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION PD_FILE_VERSION
+ PRODUCTVERSION PD_FILE_VERSION
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+ FILEFLAGS 0
+ FILEOS VOS__WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+	BLOCK "StringFileInfo"
+	BEGIN
+		BLOCK "040904B0"
+		BEGIN
+			VALUE "CompanyName", "ProcessDiscovery\0"
+			VALUE "FileDescription", "ProcessDiscovery native catalog\0"
+			VALUE "FileVersion", PD_FILE_VERSION_TEXT
+			VALUE "InternalName", "ProcessDiscovery.dll\0"
+			VALUE "OriginalFilename", "ProcessDiscovery.dll\0"
+			VALUE "ProductName", "ProcessDiscovery\0"
+			VALUE "ProductVersion", PD_FILE_VERSION_TEXT
+		END
+	END
+	BLOCK "VarFileInfo"
+	BEGIN
+		VALUE "Translation", 0x0409, 1200
+	END
+END
