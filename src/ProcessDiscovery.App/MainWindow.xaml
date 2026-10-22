@@ -19,6 +19,8 @@
                    Margin="0,0,0,10"
                    AutomationProperties.LiveSetting="Polite"
                    AutomationProperties.Name="Status da consulta"
+                   Foreground="{DynamicResource ItauNavyBrush}"
+                   FontSize="14"
                    FontWeight="SemiBold"
                    Text="Nenhuma consulta executada." />
 
