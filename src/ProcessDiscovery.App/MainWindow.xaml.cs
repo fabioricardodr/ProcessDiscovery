@@ -1,5 +1,8 @@
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Threading;
 using ProcessDiscovery.Application.Backend;
 using ProcessDiscovery.Application.Presentation;
 
@@ -11,11 +14,22 @@ public partial class MainWindow : Window
     private readonly ProcessPresentationController? _controller;
     private CancellationTokenSource? _refreshCancellation;
     private CancellationTokenSource? _detailCancellation;
+    private readonly DispatcherTimer _refreshTimer;
+    private bool _isRefreshing;
+    private bool _isClosed;
+    private ProcessSelection _selection = ProcessSelection.Empty;
 
     public MainWindow(ProcessPresentationState state)
     {
         ArgumentNullException.ThrowIfNull(state);
         State = state;
+        _selection = state.Selection;
+        _refreshTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
+        {
+            Interval = TimeSpan.FromSeconds(10)
+        };
+        _refreshTimer.Tick += RefreshTimer_OnTick;
+        Closed += MainWindow_OnClosed;
         InitializeComponent();
         ApplyState();
     }
@@ -29,8 +43,8 @@ public partial class MainWindow : Window
         : this(controller?.State ?? throw new ArgumentNullException(nameof(controller)))
     {
         _controller = controller;
+        RefreshButton.IsEnabled = true;
         Loaded += MainWindow_OnLoaded;
-        Closed += MainWindow_OnClosed;
     }
 
     private static ProcessPresentationController CreateController()
@@ -47,6 +61,8 @@ public partial class MainWindow : Window
         var selectedTablePid = ProcessTable.SelectedItem is ProcessTableRow selectedRow
             ? selectedRow.Pid
             : (uint?)null;
+        var selectedTreePid = (ProcessTree.SelectedItem as ProcessTreePresentationNode)?.Pid;
+        var treeChanged = !ReferenceEquals(ProcessTree.ItemsSource, State.TreeRoots);
 
         _applyingState = true;
         try
@@ -55,14 +71,87 @@ public partial class MainWindow : Window
             ProcessTree.ItemsSource = State.TreeRoots;
             StatusText.Text = State.AccessibleStatus;
             AutomationProperties.SetName(StatusText, $"Status da consulta: {State.AccessibleStatus}");
+            RefreshButton.IsEnabled = _controller is not null && !_isRefreshing && !_isClosed;
 
             if (selectedTablePid is uint pid)
                 ProcessTable.SelectedItem = State.TableRows.FirstOrDefault(row => row.Pid == pid);
+            if (treeChanged && selectedTreePid is uint treePid)
+                RestoreTreeSelection(treePid);
+
+            if (_selection.ProcessId is uint selectedPid)
+            {
+                if (_selection.Kind == ProcessSelectionKind.TreeNode)
+                    State.SelectTreeNode(selectedPid);
+                else
+                    State.SelectTableRow(selectedPid);
+
+                _selection = State.Selection;
+                if (_selection == ProcessSelection.Empty)
+                {
+                    _detailCancellation?.Cancel();
+                    ClearDetail();
+                }
+            }
         }
         finally
         {
             _applyingState = false;
         }
+    }
+
+    private void RestoreTreeSelection(uint processId)
+    {
+        var path = new List<ProcessTreePresentationNode>();
+        if (!FindTreePath(State.TreeRoots, processId, path))
+            return;
+
+        ItemsControl parent = ProcessTree;
+        foreach (var node in path)
+        {
+            parent.ApplyTemplate();
+            parent.UpdateLayout();
+            if (parent.ItemContainerGenerator.ContainerFromItem(node) is not TreeViewItem)
+            {
+                // Realize only the selected branch, including virtualized ancestors.
+                FindVisualChild<VirtualizingStackPanel>(parent)?
+                    .BringIndexIntoViewPublic(parent.Items.IndexOf(node));
+                parent.UpdateLayout();
+            }
+            if (parent.ItemContainerGenerator.ContainerFromItem(node) is not TreeViewItem item)
+                return;
+
+            if (node.Pid == processId)
+                item.IsSelected = true;
+            else
+                item.IsExpanded = true;
+            parent = item;
+        }
+    }
+
+    private static bool FindTreePath(
+        IReadOnlyList<ProcessTreePresentationNode> nodes, uint processId, List<ProcessTreePresentationNode> path)
+    {
+        foreach (var node in nodes)
+        {
+            path.Add(node);
+            if (node.Pid == processId || FindTreePath(node.Children, processId, path))
+                return true;
+            path.RemoveAt(path.Count - 1);
+        }
+        return false;
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match)
+                return match;
+            if (FindVisualChild<T>(child) is T descendant)
+                return descendant;
+        }
+        return null;
     }
 
     public void ApplyStateOnUiThread()
@@ -78,6 +167,7 @@ public partial class MainWindow : Window
         if (!_applyingState && ProcessTable.SelectedItem is ProcessTableRow row)
         {
             State.SelectTableRow(row.Pid);
+            _selection = State.Selection;
             _ = LoadDetailAsync(row.Pid);
         }
     }
@@ -87,6 +177,7 @@ public partial class MainWindow : Window
         if (!_applyingState && e.NewValue is ProcessTreePresentationNode node)
         {
             State.SelectTreeNode(node.Pid);
+            _selection = State.Selection;
             _ = LoadDetailAsync(node.Pid);
         }
     }
@@ -94,30 +185,41 @@ public partial class MainWindow : Window
     private async void MainWindow_OnLoaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_OnLoaded;
+        if (_isClosed)
+            return;
         await RefreshAsync();
+        if (!_isClosed)
+            _refreshTimer.Start();
     }
+
+    private async void RefreshTimer_OnTick(object? sender, EventArgs e) => await RefreshAsync();
+
+    private async void RefreshButton_OnClick(object sender, RoutedEventArgs e) => await RefreshAsync();
 
     private void MainWindow_OnClosed(object? sender, EventArgs e)
     {
+        _isClosed = true;
+        Loaded -= MainWindow_OnLoaded;
+        _refreshTimer.Stop();
+        _refreshTimer.Tick -= RefreshTimer_OnTick;
         _refreshCancellation?.Cancel();
-        _refreshCancellation?.Dispose();
         _detailCancellation?.Cancel();
-        _detailCancellation?.Dispose();
         _controller?.State.SetBusy(false);
     }
 
     private async Task RefreshAsync()
     {
-        if (_controller is null)
+        if (_controller is null || _isClosed || _isRefreshing)
             return;
 
-        _refreshCancellation?.Cancel();
-        _refreshCancellation?.Dispose();
-        _refreshCancellation = new CancellationTokenSource();
-        ApplyStateOnUiThread();
+        _isRefreshing = true;
+        using var cancellation = new CancellationTokenSource();
+        _refreshCancellation = cancellation;
 
         try
         {
+            State.SetBusy(true);
+            ApplyStateOnUiThread();
             await _controller.RefreshAsync(
                 new QueryRequest(
                     QueryMode.Enumerate,
@@ -125,24 +227,29 @@ public partial class MainWindow : Window
                     IncludeInternalName: true,
                     IncludeSignature: false,
                     IncludeModules: false),
-                _refreshCancellation.Token);
+                cancellation.Token);
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception exception)
         {
-            State.SetFatal(exception.Message);
+            if (!_isClosed)
+                State.SetFatal(exception.Message);
         }
         finally
         {
-            ApplyStateOnUiThread();
+            _refreshCancellation = null;
+            _isRefreshing = false;
+            State.SetBusy(false);
+            if (!_isClosed)
+                ApplyStateOnUiThread();
         }
     }
 
     private async Task LoadDetailAsync(uint processId)
     {
-        if (_controller is null || State.Snapshot is null)
+        if (_controller is null || State.Snapshot is null || _isClosed)
             return;
 
         var selected = State.Snapshot.Processes.FirstOrDefault(process => process.Pid == processId);
@@ -150,8 +257,8 @@ public partial class MainWindow : Window
             return;
 
         _detailCancellation?.Cancel();
-        _detailCancellation?.Dispose();
-        _detailCancellation = new CancellationTokenSource();
+        using var cancellation = new CancellationTokenSource();
+        _detailCancellation = cancellation;
 
         try
         {
@@ -163,9 +270,10 @@ public partial class MainWindow : Window
                     IncludeInternalName: true,
                     IncludeSignature: true,
                     IncludeModules: true),
-                _detailCancellation.Token);
+                cancellation.Token);
 
-            if (!response.IsFatal)
+            if (!response.IsFatal && !cancellation.IsCancellationRequested && !_isClosed
+                && _selection.ProcessId == processId)
             {
                 var detail = response.Snapshot.Processes.FirstOrDefault(process => process.Pid == processId);
                 if (detail is not null)
@@ -177,8 +285,24 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
-            DetailPidText.Text = $"Falha ao consultar PID {processId}: {exception.Message}";
+            if (!_isClosed && !cancellation.IsCancellationRequested && _selection.ProcessId == processId)
+                DetailPidText.Text = $"Falha ao consultar PID {processId}: {exception.Message}";
         }
+        finally
+        {
+            if (ReferenceEquals(_detailCancellation, cancellation))
+                _detailCancellation = null;
+        }
+    }
+
+    private void ClearDetail()
+    {
+        DetailPidText.Text = "Nenhum processo selecionado.";
+        DetailInternalNameText.Text = "-";
+        DetailIdentityText.Text = "-";
+        DetailSignatureText.Text = "-";
+        DetailModulesText.Text = "-";
+        DetailConsistencyText.Text = "-";
     }
 
     private void ApplyDetail(ProcessDetailPresentation detail)

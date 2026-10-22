@@ -240,3 +240,26 @@ arquitetura correspondente. Não há fallback entre arquiteturas.
    cancelamento e falhas; não remover metas nem substituir falhas por médias.
 
 Resultados numéricos serão anexados somente após a execução efetiva.
+
+## Atualização da lista na janela WPF
+
+- A primeira enumeração continua sendo executada no carregamento da janela.
+- Após essa consulta, um único `DispatcherTimer` solicita a enumeração principal
+  a cada 10 segundos. O botão **Atualizar** solicita a mesma operação imediatamente.
+- Enquanto há uma enumeração em andamento, novos pedidos são ignorados, o botão
+  fica desabilitado e o status acessível informa que a consulta está em andamento.
+  Ao terminar, inclusive com erro ou cancelamento, o botão volta a ficar disponível.
+- A seleção da tabela e da árvore é restaurada por PID quando o processo ainda
+  existe. Se a seleção ativa desaparecer, ela e os detalhes exibidos são limpos;
+  consultas de detalhes pendentes são canceladas e respostas tardias ignoradas.
+- A atualização periódica não consulta assinatura, módulos ou detalhes. Detalhes
+  continuam sendo consultados somente por seleção explícita do usuário.
+- Ao fechar a janela, o timer é parado e desconectado, consultas pendentes são
+  canceladas e seus tokens são descartados pelos respectivos fluxos assíncronos.
+- A identificação da seleção por PID preserva o contrato atual; não representa
+  garantia de identidade diante de reutilização de PID pelo sistema operacional.
+
+Validação desta alteração: 51 testes gerenciados aprovados em Debug e em Release
+x86/x64, incluindo 13 casos WPF com backend controlado e dispatcher STA. Os testes
+acionam ticks diretamente, sem aguardar 10 segundos reais. Builds WPF Debug/Release
+x86/x64 concluídos sem avisos nem erros. Bridge e DLL nativa não foram modificadas.

@@ -14,13 +14,21 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <TextBlock x:Name="StatusText"
-                   Grid.Row="0"
-                   Margin="0,0,0,10"
-                   AutomationProperties.LiveSetting="Polite"
-                   AutomationProperties.Name="Status da consulta"
-                   FontWeight="SemiBold"
-                   Text="Nenhuma consulta executada." />
+        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+            <Button x:Name="RefreshButton"
+                    DockPanel.Dock="Right"
+                    Content="Atualizar"
+                    Padding="12,4"
+                    Margin="12,0,0,0"
+                    Click="RefreshButton_OnClick"
+                    AutomationProperties.Name="Atualizar processos" />
+            <TextBlock x:Name="StatusText"
+                       VerticalAlignment="Center"
+                       AutomationProperties.LiveSetting="Polite"
+                       AutomationProperties.Name="Status da consulta"
+                       FontWeight="SemiBold"
+                       Text="Nenhuma consulta executada." />
+        </DockPanel>
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
